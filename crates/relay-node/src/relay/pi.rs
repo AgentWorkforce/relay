@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 mod config;
 mod inbox;
 mod native_choice;
+mod rebind;
 pub(crate) mod setup;
 pub use config::{Flavor, PiConfig};
 use inbox::{atomic_write_guarded, delivery_lock};
@@ -178,7 +179,7 @@ pub fn native_continuation(
     registration.target.kind == SessionKind::Pi
         && binding(config, table, uid, &registration.target.id).is_some_and(|binding| {
             binding.registry.native_continuation == 1
-                && registration.route_binding.as_deref() == Some(&binding.reference)
+                && rebind::accepts(config, table, uid, registration, &binding)
         })
 }
 
@@ -367,23 +368,30 @@ fn next_sequence(directory: &Path, uid: u32) -> Option<u64> {
     Some(sequence)
 }
 
+/// The registration's current pin: its pinned binding, or the binding that
+/// succeeded it after its holder was proven gone (`rebind`).
 fn pinned_directory(
     config: &PiConfig,
     uid: u32,
     registration: &crate::relay::store::Registration,
 ) -> Option<PathBuf> {
-    let parts: Vec<_> = registration.route_binding.as_deref()?.split(':').collect();
-    if parts.len() != 4
-        || parts[0] != config.flavor.kind().as_str()
-        || !nonce(parts[3])
-        || !parts[1].parse::<i32>().is_ok_and(|pid| pid > 0)
-        || !parts[2].parse::<u64>().is_ok_and(|start| start > 0)
-    {
-        return None;
-    }
-    let directory = config.runtime.join(parts[3]);
-    (config.enabled && private(&config.runtime, uid, true) && private(&directory, uid, true))
-        .then_some(directory)
+    rebind::chain(config, uid, registration)
+        .pop()
+        .map(|pin| pin.directory)
+}
+
+/// Every directory the registration was pinned to, newest first.
+fn pinned_directories(
+    config: &PiConfig,
+    uid: u32,
+    registration: &crate::relay::store::Registration,
+) -> Vec<PathBuf> {
+    let mut directories: Vec<_> = rebind::chain(config, uid, registration)
+        .into_iter()
+        .map(|pin| pin.directory)
+        .collect();
+    directories.reverse();
+    directories
 }
 
 fn recorded_delivery(
@@ -394,38 +402,43 @@ fn recorded_delivery(
     text: &str,
     native: bool,
 ) -> Option<InjectOutcome> {
-    let directory = pinned_directory(config, uid, registration)?;
-    let path = directory.join(format!("{}.json", key(message_id)));
-    if fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
-        return None;
-    }
-    let valid = read::<Delivery>(&path, uid).filter(|d| {
-        // An accepted handoff keeps its original text and mode across opt-in
-        // or opt-out. Cross-mode retries only observe it; they never rewrite it.
-        (d.version == delivery_version(native) && d.text == text
-            || d.version == delivery_version(!native))
-            && d.session_id == registration.target.id
-            && d.message_id == message_id
-    });
-    match valid {
-        Some(record) if record.state == "recorded" => Some(InjectOutcome::Delivered),
-        Some(record)
-            if (native || record.version == 2)
-                && matches!(record.state.as_str(), "pending" | "claimed") =>
-        {
-            // The provider already owns this exact handoff. Neither loss of
-            // capability nor a restarted caller may rewrite or resend it.
-            Some(InjectOutcome::Accepted(format!(
-                "Waiting for {} to record this message.",
-                config.name()
-            )))
+    // The newest directory holding this message decides; a copy that moved
+    // on after a rebind (`moved`) leaves it to the directory it moved to.
+    for directory in pinned_directories(config, uid, registration) {
+        let path = directory.join(format!("{}.json", key(message_id)));
+        if fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+            continue;
         }
-        Some(record) if matches!(record.state.as_str(), "pending" | "claimed") => None,
-        _ => Some(InjectOutcome::InDoubt(format!(
-            "{}'s saved delivery record could not be verified.",
-            config.name()
-        ))),
+        let valid = read::<Delivery>(&path, uid).filter(|d| {
+            // An accepted handoff keeps its original text and mode across opt-in
+            // or opt-out. Cross-mode retries only observe it; they never rewrite it.
+            (d.version == delivery_version(native) && d.text == text
+                || d.version == delivery_version(!native))
+                && d.session_id == registration.target.id
+                && d.message_id == message_id
+        });
+        return match valid {
+            Some(record) if record.state == "moved" => continue,
+            Some(record) if record.state == "recorded" => Some(InjectOutcome::Delivered),
+            Some(record)
+                if (native || record.version == 2)
+                    && matches!(record.state.as_str(), "pending" | "claimed") =>
+            {
+                // The provider already owns this exact handoff. Neither loss of
+                // capability nor a restarted caller may rewrite or resend it.
+                Some(InjectOutcome::Accepted(format!(
+                    "Waiting for {} to record this message.",
+                    config.name()
+                )))
+            }
+            Some(record) if matches!(record.state.as_str(), "pending" | "claimed") => None,
+            _ => Some(InjectOutcome::InDoubt(format!(
+                "{}'s saved delivery record could not be verified.",
+                config.name()
+            ))),
+        };
     }
+    None
 }
 
 /// Whether this exact message is already in the pinned session's inbox,
@@ -437,15 +450,18 @@ fn queued_delivery(
     message_id: &str,
     text: &str,
 ) -> bool {
-    let Some(directory) = pinned_directory(config, uid, registration) else {
-        return false;
-    };
-    read::<Delivery>(&directory.join(format!("{}.json", key(message_id))), uid).is_some_and(|d| {
-        d.session_id == registration.target.id
-            && d.message_id == message_id
-            && d.text == text
-            && matches!(d.state.as_str(), "pending" | "claimed")
-    })
+    pinned_directories(config, uid, registration)
+        .iter()
+        .any(|directory| {
+            read::<Delivery>(&directory.join(format!("{}.json", key(message_id))), uid).is_some_and(
+                |d| {
+                    d.session_id == registration.target.id
+                        && d.message_id == message_id
+                        && d.text == text
+                        && matches!(d.state.as_str(), "pending" | "claimed")
+                },
+            )
+        })
 }
 
 pub fn send(
@@ -500,6 +516,16 @@ fn send_with(
 ) -> InjectOutcome {
     let native = admit.is_some();
     let name = config.name();
+    // After `/reload` or a restart the same session has a new binding: it
+    // becomes the pin once the old holder is proven gone, never before, and
+    // brings the messages queued under the old pin with it before any
+    // receipt below is read.
+    let live = (!config.turned_off())
+        .then(|| binding(config, table, uid, &registration.target.id))
+        .flatten();
+    let followed = live
+        .as_ref()
+        .map(|live| rebind::follow(config, table, uid, registration, live));
     // Settlement must survive the harness exiting or switching runtimes after receipt.
     // Only new submissions need a live process with the exact pinned identity.
     if let Some(outcome) = recorded_delivery(config, uid, registration, message_id, text, native) {
@@ -522,16 +548,14 @@ fn send_with(
             return outcome;
         }
     }
-    let Some(binding) = binding(config, table, uid, &registration.target.id) else {
+    let Some(binding) = live else {
         return InjectOutcome::Waiting(format!(
             "{name} is not connected. {}",
             config.flavor.reconnect()
         ));
     };
-    if registration.route_binding.as_deref() != Some(&binding.reference) {
-        return InjectOutcome::Refused(format!(
-            "The {name} session binding changed; turn this agent off, then add the session again."
-        ));
+    if let Some(Err(outcome)) = followed {
+        return outcome;
     }
     if native && binding.registry.native_continuation != 1 {
         return InjectOutcome::Refused(format!(
@@ -601,16 +625,22 @@ fn send_with(
     })
 }
 
-/// Read receipts even after the harness exits, but only from this registration's pinned runtime.
+/// Read receipts even after the harness exits, but only from this registration's pinned
+/// runtime and the bindings that succeeded it (`rebind`).
 pub fn final_answer(
     config: &PiConfig,
     uid: u32,
     registration: &crate::relay::store::Registration,
     reference: &str,
 ) -> Option<String> {
-    let directory = pinned_directory(config, uid, registration)?;
-    let records: Vec<Delivery> = fs::read_dir(directory)
-        .ok()?
+    let directories = pinned_directories(config, uid, registration);
+    if directories.is_empty() {
+        return None;
+    }
+    let records: Vec<Delivery> = directories
+        .iter()
+        .filter_map(|directory| fs::read_dir(directory).ok())
+        .flatten()
         .flatten()
         .filter(|e| {
             e.file_name().to_string_lossy().ends_with(".json") && e.file_name() != "session.json"
