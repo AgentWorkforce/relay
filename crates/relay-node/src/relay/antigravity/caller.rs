@@ -252,14 +252,45 @@ fn is_redirection_prefix(word: &str) -> bool {
     trimmed.starts_with('<') || trimmed.starts_with('>')
 }
 
+/// Split a shell command line on unquoted `;`, `|`, `&`, or `\n` separators so
+/// quoted text such as `echo 'antigravity-hook;test'` stays intact.
+fn split_shell_segments(cmd: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    for (idx, ch) in cmd.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single => escaped = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ';' | '|' | '&' | '\n' if !in_single && !in_double => {
+                segments.push(&cmd[start..idx]);
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    segments.push(&cmd[start..]);
+    segments
+}
+
 fn command_invokes_hook_helper(cmd: &str, helper_name: &str, event: &str) -> bool {
     if helper_name.is_empty() {
         return false;
     }
-    for segment in cmd.split([';', '|', '&', '\n']) {
+    for segment in split_shell_segments(cmd) {
         let Ok(words) = shell_words::split(segment) else {
-            // Unparseable shell syntax mentioning exec or the hook subcommand fails closed.
-            if segment.contains("antigravity-hook") || segment.contains("exec") {
+            // Unparseable shell syntax mentioning exec/eval or the hook subcommand fails closed.
+            if segment.contains("antigravity-hook")
+                || segment.contains("exec")
+                || segment.contains("eval")
+            {
                 return true;
             }
             continue;
@@ -277,8 +308,8 @@ fn command_invokes_hook_helper(cmd: &str, helper_name: &str, event: &str) -> boo
                 }
                 continue;
             }
-            if word == "exec" {
-                // Any in-flight `exec ...` in a sibling shell can replace the
+            if word == "exec" || word == "eval" {
+                // Any in-flight `exec`/`eval` in a sibling shell can replace the
                 // shell so the spawned helper's direct parent is language_server.
                 return true;
             }

@@ -145,6 +145,14 @@ pub fn hook_environment_ok(
     if !table.environment_readable(pid) || table.has_terminal(pid) {
         return false;
     }
+    // Also reject if any open descriptor (e.g. stdout/stderr after redirecting
+    // stdin) is still attached to a TTY device.
+    if table.open_files(pid).iter().any(|path| {
+        let s = path.to_string_lossy();
+        s.starts_with("/dev/tty") || s.starts_with("/dev/pts/")
+    }) {
+        return false;
+    }
     if table
         .environment_var(pid, "ANTIGRAVITY_SOURCE_METADATA")
         .is_some()

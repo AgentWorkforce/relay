@@ -469,13 +469,24 @@ fn hook_rejects_shell_parent_tool_env_wrong_cwd_and_sibling_hook_command() {
     );
     let logs_a = config.brain().join(SID_A).join(".system_generated/logs");
     std::fs::create_dir_all(&logs_a).unwrap();
-    // Harmless search mentioning `antigravity-hook` must NEVER block another conversation's hook.
+    // Harmless search or quoted separator mentioning `antigravity-hook` must NEVER block another conversation's hook.
     std::fs::write(
         logs_a.join("transcript_full.jsonl"),
         format!(
             "{}\n{}\n",
             json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"search"}),
             json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"rg antigravity-hook ."}}]}),
+        ),
+    )
+    .unwrap();
+    assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_some());
+
+    std::fs::write(
+        logs_a.join("transcript_full.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"echo"}),
+            json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"echo 'antigravity-hook;test'; sleep 30"}}]}),
         ),
     )
     .unwrap();
@@ -506,31 +517,39 @@ fn hook_rejects_shell_parent_tool_env_wrong_cwd_and_sibling_hook_command() {
     .unwrap();
     assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_some());
 
-    // An in-flight sibling `exec` wrapper (even without literal `antigravity-hook`) is blocked.
-    std::fs::write(
-        logs_a.join("transcript_full.jsonl"),
-        format!(
-            "{}\n{}\n",
-            json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"wrap"}),
-            json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"cd ~/.gemini/config && exec /tmp/wrapper.sh"}}]}),
-        ),
-    )
-    .unwrap();
-    assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_none());
+    // An in-flight sibling `exec` or `eval` wrapper (even without literal `antigravity-hook`) is blocked.
+    for cmd in [
+        "cd ~/.gemini/config && exec /tmp/wrapper.sh",
+        "eval \"cd ~/.gemini/config && exec /tmp/wrapper.sh\"",
+    ] {
+        std::fs::write(
+            logs_a.join("transcript_full.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"wrap"}),
+                json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":cmd}}]}),
+            ),
+        )
+        .unwrap();
+        assert!(
+            hook_answer(&config, &table, 501, 156, &payload, &|| true).is_none(),
+            "should block in-flight sibling command: {cmd}"
+        );
+    }
 
     // A corrupt/unparseable sibling transcript fails closed.
     std::fs::write(logs_a.join("transcript_full.jsonl"), "not-json\n").unwrap();
     assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_none());
     std::fs::remove_file(logs_a.join("transcript_full.jsonl")).unwrap();
 
-    // 7) A hook process attached to a terminal (PTY) must be rejected.
+    // 7) A hook process attached to a terminal (either stdin PTY or an open /dev/tty* descriptor) must be rejected.
     table.insert(
         157,
         FakeProcess {
             parent: ls_pid,
             uid: 501,
             start: 42,
-            executable: Some(helper),
+            executable: Some(helper.clone()),
             arguments: vec![
                 "agent-relay-probe".into(),
                 "antigravity-hook".into(),
@@ -543,6 +562,27 @@ fn hook_rejects_shell_parent_tool_env_wrong_cwd_and_sibling_hook_command() {
         },
     );
     assert!(hook_answer(&config, &table, 501, 157, &payload, &|| true).is_none());
+
+    table.insert(
+        158,
+        FakeProcess {
+            parent: ls_pid,
+            uid: 501,
+            start: 43,
+            executable: Some(helper),
+            arguments: vec![
+                "agent-relay-probe".into(),
+                "antigravity-hook".into(),
+                "--event".into(),
+                "stop".into(),
+            ],
+            cwd: Some(config.config_dir.clone()),
+            has_terminal: false,
+            open_files: vec![PathBuf::from("/dev/ttys004")],
+            ..Default::default()
+        },
+    );
+    assert!(hook_answer(&config, &table, 501, 158, &payload, &|| true).is_none());
 
     // 8) A payload naming a transcriptPath outside the target conversation's brain dir is rejected.
     let bad_transcript = json!({
