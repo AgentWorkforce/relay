@@ -17,7 +17,7 @@ import {
 } from './identity.js';
 import { isHeadlessEnvironment, runDeviceAuthorizationFlow, type DeviceFlowHooks } from './device-auth.js';
 import {
-  AUTH_FILE_PATH,
+  authFilePath,
   DEFAULT_REFRESH_TIMEOUT_MS,
   REFRESH_TOKEN_WINDOW_MS,
   REFRESH_WINDOW_MS,
@@ -29,11 +29,22 @@ import {
   type WhoAmIResponse,
 } from './types.js';
 
-const AUTH_DIR_PATH = path.dirname(AUTH_FILE_PATH);
-const AUTH_LOCK_PATH = `${AUTH_FILE_PATH}.lock`;
 const AUTH_LOCK_RETRY_DELAY_MS = 50;
 const AUTH_LOCK_STALE_MS = 30_000;
 const AUTH_LOCK_TIMEOUT_MS = 30_000;
+
+function resolveAuthPaths(env: NodeJS.ProcessEnv = process.env): {
+  filePath: string;
+  dirPath: string;
+  lockPath: string;
+} {
+  const filePath = authFilePath(env);
+  return {
+    filePath,
+    dirPath: path.dirname(filePath),
+    lockPath: `${filePath}.lock`,
+  };
+}
 
 const envBackedAuth = new WeakSet<StoredAuth>();
 
@@ -118,9 +129,9 @@ function isNodeErrorWithCode(error: unknown, code: string): boolean {
   );
 }
 
-async function readCanonicalStoredAuth(): Promise<StoredAuth | null> {
+async function readCanonicalStoredAuth(env: NodeJS.ProcessEnv = process.env): Promise<StoredAuth | null> {
   try {
-    const file = await fs.readFile(AUTH_FILE_PATH, 'utf8');
+    const file = await fs.readFile(authFilePath(env), 'utf8');
     const parsed = JSON.parse(file) as unknown;
     return isValidStoredAuth(parsed) ? parsed : null;
   } catch {
@@ -134,18 +145,19 @@ export async function readStoredAuth(env: NodeJS.ProcessEnv = process.env): Prom
     return envAuth;
   }
 
-  return readCanonicalStoredAuth();
+  return readCanonicalStoredAuth(env);
 }
 
-export async function writeStoredAuth(auth: StoredAuth): Promise<void> {
-  await fs.mkdir(AUTH_DIR_PATH, {
+export async function writeStoredAuth(auth: StoredAuth, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const { filePath, dirPath } = resolveAuthPaths(env);
+  await fs.mkdir(dirPath, {
     recursive: true,
     mode: 0o700,
   });
 
   const temporaryPath = path.join(
-    AUTH_DIR_PATH,
-    `.${path.basename(AUTH_FILE_PATH)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
+    dirPath,
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
   );
 
   try {
@@ -154,15 +166,15 @@ export async function writeStoredAuth(auth: StoredAuth): Promise<void> {
       mode: 0o600,
     });
     await fs.chmod(temporaryPath, 0o600);
-    await fs.rename(temporaryPath, AUTH_FILE_PATH);
+    await fs.rename(temporaryPath, filePath);
   } finally {
     await fs.rm(temporaryPath, { force: true });
   }
 }
 
-export async function clearStoredAuth(): Promise<void> {
-  await fs.rm(AUTH_FILE_PATH, { force: true });
-  await clearStoredIdentity();
+export async function clearStoredAuth(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  await fs.rm(authFilePath(env), { force: true });
+  await clearStoredIdentity(env);
 }
 
 // ── Identity ────────────────────────────────────────────────────────────────
@@ -251,9 +263,9 @@ export async function hasCurrentStoredCloudIdentity(
   return Boolean(existing && existing.apiUrl === auth.apiUrl);
 }
 
-async function removeStaleStoredAuthLock(): Promise<boolean> {
+async function removeStaleStoredAuthLock(lockPath: string): Promise<boolean> {
   try {
-    const lockStats = await fs.stat(AUTH_LOCK_PATH);
+    const lockStats = await fs.stat(lockPath);
     if (Date.now() - lockStats.mtimeMs < AUTH_LOCK_STALE_MS) {
       return false;
     }
@@ -264,11 +276,11 @@ async function removeStaleStoredAuthLock(): Promise<boolean> {
     throw error;
   }
 
-  await fs.rm(AUTH_LOCK_PATH, { recursive: true, force: true });
+  await fs.rm(lockPath, { recursive: true, force: true });
   return true;
 }
 
-async function acquireStoredAuthLock(signal?: AbortSignal): Promise<void> {
+async function acquireStoredAuthLock(lockPath: string, signal?: AbortSignal): Promise<void> {
   const startedAt = Date.now();
 
   while (true) {
@@ -277,7 +289,7 @@ async function acquireStoredAuthLock(signal?: AbortSignal): Promise<void> {
     }
 
     try {
-      await fs.mkdir(AUTH_LOCK_PATH, { mode: 0o700 });
+      await fs.mkdir(lockPath, { mode: 0o700 });
       return;
     } catch (error) {
       if (!isNodeErrorWithCode(error, 'EEXIST')) {
@@ -285,12 +297,12 @@ async function acquireStoredAuthLock(signal?: AbortSignal): Promise<void> {
       }
     }
 
-    if (await removeStaleStoredAuthLock()) {
+    if (await removeStaleStoredAuthLock(lockPath)) {
       continue;
     }
 
     if (Date.now() - startedAt >= AUTH_LOCK_TIMEOUT_MS) {
-      throw new Error(`Timed out waiting for cloud auth lock at ${AUTH_LOCK_PATH}`);
+      throw new Error(`Timed out waiting for cloud auth lock at ${lockPath}`);
     }
 
     await delay(AUTH_LOCK_RETRY_DELAY_MS, undefined, { signal });
@@ -299,18 +311,19 @@ async function acquireStoredAuthLock(signal?: AbortSignal): Promise<void> {
 
 async function withStoredAuthLock<T>(
   callback: () => Promise<T>,
-  options: { signal?: AbortSignal } = {}
+  options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}
 ): Promise<T> {
-  await fs.mkdir(AUTH_DIR_PATH, {
+  const { dirPath, lockPath } = resolveAuthPaths(options.env);
+  await fs.mkdir(dirPath, {
     recursive: true,
     mode: 0o700,
   });
-  await acquireStoredAuthLock(options.signal);
+  await acquireStoredAuthLock(lockPath, options.signal);
 
   try {
     return await callback();
   } finally {
-    await fs.rm(AUTH_LOCK_PATH, { recursive: true, force: true });
+    await fs.rm(lockPath, { recursive: true, force: true });
   }
 }
 
@@ -578,6 +591,7 @@ export async function refreshStoredAuth(
     refreshTimeoutMs?: number;
     signal?: AbortSignal;
     validateApiUrl?: (apiUrl: string) => void;
+    env?: NodeJS.ProcessEnv;
   } = {}
 ): Promise<StoredAuth> {
   if (isEnvBackedAuth(auth)) {
@@ -587,7 +601,7 @@ export async function refreshStoredAuth(
   }
 
   return withStoredAuthLock(async () => {
-    const latestAuth = await readCanonicalStoredAuth();
+    const latestAuth = await readCanonicalStoredAuth(options.env);
     const refreshSource = latestAuth?.apiUrl === auth.apiUrl ? latestAuth : auth;
 
     if (!options.force && latestAuth?.apiUrl === auth.apiUrl && !shouldRefreshStoredAuth(latestAuth)) {
@@ -599,7 +613,7 @@ export async function refreshStoredAuth(
     // general Cloud client. Validate a refresh-selected host before persisting
     // the rotated credentials or allowing a retry to send them there.
     options.validateApiUrl?.(nextAuth.apiUrl);
-    await writeStoredAuth(nextAuth);
+    await writeStoredAuth(nextAuth, options.env);
     return nextAuth;
   }, options);
 }
@@ -664,16 +678,17 @@ async function requestStoredAuthRefresh(
  */
 async function completeLogin(
   auth: StoredAuth,
-  options: { validateApiUrl?: (apiUrl: string) => void } = {}
+  options: { validateApiUrl?: (apiUrl: string) => void; env?: NodeJS.ProcessEnv } = {}
 ): Promise<StoredAuth> {
   // Validate the server-selected host before either persisting its credentials
   // or sending its new bearer to whoami. This is the final common boundary for
   // both browser callbacks and device-code grants.
   options.validateApiUrl?.(auth.apiUrl);
-  await writeStoredAuth(auth);
+  await writeStoredAuth(auth, options.env);
   // Record who just logged in so subsequent CLI/broker runs can attribute
   // telemetry to this user and org. Never blocks the login from succeeding.
   const identity = await refreshStoredCloudIdentity(auth, {
+    env: options.env,
     validateApiUrl: options.validateApiUrl,
   });
   console.log(`Logged in to ${auth.apiUrl}`);
@@ -686,7 +701,7 @@ async function completeLogin(
 
 async function loginWithBrowser(
   apiUrl: string,
-  options: { validateApiUrl?: (apiUrl: string) => void } = {}
+  options: { validateApiUrl?: (apiUrl: string) => void; env?: NodeJS.ProcessEnv } = {}
 ): Promise<StoredAuth> {
   options.validateApiUrl?.(apiUrl);
   return completeLogin(await beginBrowserLogin(apiUrl), options);
@@ -703,9 +718,10 @@ export async function loginWithDevice(
   options: {
     clientName?: string;
     validateApiUrl?: (apiUrl: string) => void;
+    env?: NodeJS.ProcessEnv;
   } & DeviceFlowHooks = {}
 ): Promise<StoredAuth> {
-  const { validateApiUrl, ...deviceOptions } = options;
+  const { validateApiUrl, env, ...deviceOptions } = options;
   validateApiUrl?.(apiUrl);
   const deviceFetch = deviceOptions.fetchImpl ?? fetch;
   const policyDeviceOptions = validateApiUrl
@@ -717,6 +733,7 @@ export async function loginWithDevice(
     : deviceOptions;
   return completeLogin(await runDeviceAuthorizationFlow(apiUrl, policyDeviceOptions), {
     validateApiUrl,
+    env,
   });
 }
 
@@ -736,9 +753,9 @@ async function loginInteractive(
 ): Promise<StoredAuth> {
   const env = options.env ?? process.env;
   if (options.device === true || isHeadlessEnvironment(env)) {
-    return loginWithDevice(apiUrl, { validateApiUrl: options.validateApiUrl });
+    return loginWithDevice(apiUrl, { validateApiUrl: options.validateApiUrl, env });
   }
-  return loginWithBrowser(apiUrl, { validateApiUrl: options.validateApiUrl });
+  return loginWithBrowser(apiUrl, { validateApiUrl: options.validateApiUrl, env });
 }
 
 export async function ensureAuthenticated(
@@ -748,6 +765,7 @@ export async function ensureAuthenticated(
     interactive?: boolean;
     device?: boolean;
     refreshTimeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
   }
 ): Promise<StoredAuth> {
   const session = await ensureCloudSession({
@@ -756,6 +774,7 @@ export async function ensureAuthenticated(
     interactive: options?.interactive,
     device: options?.device,
     refreshTimeoutMs: options?.refreshTimeoutMs,
+    env: options?.env,
   });
   return session.auth;
 }
@@ -793,6 +812,7 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
     return createCloudSession(auth, {
       refreshTimeoutMs,
       validateApiUrl: options.validateApiUrl,
+      env,
     });
   }
 
@@ -804,6 +824,7 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
     return createCloudSession(stored, {
       refreshTimeoutMs,
       validateApiUrl: options.validateApiUrl,
+      env,
     });
   }
 
@@ -812,10 +833,12 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
       signal: options.signal,
       refreshTimeoutMs,
       validateApiUrl: options.validateApiUrl,
+      env,
     });
     return createCloudSession(auth, {
       refreshTimeoutMs,
       validateApiUrl: options.validateApiUrl,
+      env,
     });
   } catch (error) {
     options.signal?.throwIfAborted();
@@ -835,6 +858,7 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
     return createCloudSession(auth, {
       refreshTimeoutMs,
       validateApiUrl: options.validateApiUrl,
+      env,
     });
   }
 }
@@ -844,6 +868,7 @@ function createCloudSession(
   options: {
     refreshTimeoutMs?: number;
     validateApiUrl?: (apiUrl: string) => void;
+    env?: NodeJS.ProcessEnv;
   } = {}
 ): CloudSession {
   const clientOptions: CloudApiClientOptions = {
@@ -860,6 +885,7 @@ function createCloudSession(
           refreshTimeoutMs: options.refreshTimeoutMs,
           signal: refreshOptions.signal,
           validateApiUrl: options.validateApiUrl,
+          env: options.env,
         })
       );
   }
@@ -936,6 +962,7 @@ export async function authorizedApiFetch(
       refreshTimeoutMs: options.refreshTimeoutMs,
       signal: init.signal ?? undefined,
       validateApiUrl: options.validateApiUrl,
+      env: options.env,
     });
     activeAuth = refreshableAuth;
   } catch (error) {

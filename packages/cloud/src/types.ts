@@ -283,7 +283,15 @@ export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', '
 export const REFRESH_WINDOW_MS = 5 * 60_000;
 export const REFRESH_TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_REFRESH_TIMEOUT_MS = 10_000;
-export const AUTH_FILE_PATH = path.join(os.homedir(), '.agentworkforce/relay', 'cloud-auth.json');
+const DEFAULT_AUTH_DIR = path.join(os.homedir(), '.agentworkforce/relay');
+
+export function authFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  const dir = env.AGENT_RELAY_HOME?.trim() || DEFAULT_AUTH_DIR;
+  return path.join(dir, 'cloud-auth.json');
+}
+
+/** @deprecated Use {@link authFilePath} so `AGENT_RELAY_HOME` is honored per call. */
+export const AUTH_FILE_PATH = path.join(DEFAULT_AUTH_DIR, 'cloud-auth.json');
 
 export function defaultApiUrl(env: NodeJS.ProcessEnv = process.env): string {
   return env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';

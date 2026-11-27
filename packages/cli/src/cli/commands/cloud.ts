@@ -11,7 +11,7 @@ import {
   readStoredAuth,
   clearStoredAuth,
   defaultApiUrl,
-  AUTH_FILE_PATH,
+  authFilePath,
   REFRESH_WINDOW_MS,
   runWorkflow,
   scheduleWorkflow,
@@ -803,7 +803,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         if (session.auth.refreshTokenExpiresAt) {
           deps.log(`Refresh token expires: ${session.auth.refreshTokenExpiresAt}`);
         }
-        deps.log(`Token file: ${AUTH_FILE_PATH}`);
+        deps.log(`Token file: ${authFilePath()}`);
       }
     );
 
@@ -841,7 +841,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         deps.log(`Organization: ${formatWorkspaceLabel(payload.currentOrganization)}`);
         deps.log(`Workspace: ${formatWorkspaceLabel(payload.currentWorkspace)}`);
         deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
-        deps.log(`Token file: ${AUTH_FILE_PATH}`);
+        deps.log(`Token file: ${authFilePath()}`);
 
         // whoami is the canonical "who am I" call, so make it the refresh point
         // for the locally cached identity that tags telemetry.
