@@ -1394,11 +1394,10 @@ impl LocalInjector {
             // A Pi or Oh My Pi session's tools run under the process holding
             // its binding, which names the caller on the socket
             // (`pi_caller`), so while that binding is live it can answer.
+            // Offered only where the caller rule names the session: its
+            // holder holds this one binding, across both flavors.
             SessionKind::Pi | SessionKind::Omp => {
-                self.config.extension(target.kind).is_some_and(|extension| {
-                    crate::relay::pi::binding(extension, &*self.table, self.config.uid, &target.id)
-                        .is_some()
-                })
+                pi_caller::sole_binding(&self.config, &*self.table, target)
             }
             // OpenClaw's tools never run under this core's socket: its
             // answer is read back from the Gateway (`final_answer`).

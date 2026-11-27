@@ -93,3 +93,30 @@ fn started_before(
         .and_then(|written| i64::try_from(written.as_millis()).ok())
         .is_some_and(|written| started.saturating_add(slack) < written)
 }
+
+/// Whether `target` is the one binding its live holder holds across both
+/// flavors: exactly when `caller` names it for that holder's tools, so a
+/// reply command offered for it can be used.
+pub(super) fn sole_binding(
+    config: &LocalConfig,
+    table: &dyn ProcessTable,
+    target: &Target,
+) -> bool {
+    let Some(binding) = config
+        .extension(target.kind)
+        .and_then(|extension| crate::relay::pi::binding(extension, table, config.uid, &target.id))
+    else {
+        return false;
+    };
+    let Some(process) = binding
+        .holder()
+        .and_then(|(pid, start)| table.process(pid).filter(|p| p.start == start))
+    else {
+        return false;
+    };
+    [&config.pi, &config.omp]
+        .into_iter()
+        .map(|extension| crate::relay::pi::held_by(extension, table, config.uid, process).len())
+        .sum::<usize>()
+        == 1
+}

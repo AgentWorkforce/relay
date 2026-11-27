@@ -6,8 +6,10 @@ use std::os::unix::fs::PermissionsExt;
 const PI: &str = "a1b2c3d4-0000-4000-8000-000000000001";
 const PI_TWO: &str = "a1b2c3d4-0000-4000-8000-000000000002";
 const OMP: &str = "a1b2c3d4-0000-4000-8000-000000000003";
+const PI_THREE: &str = "a1b2c3d4-0000-4000-8000-000000000004";
 const INSTANCE: &str = "0123456789abcdef0123456789abcdef";
 const INSTANCE_TWO: &str = "fedcba9876543210fedcba9876543210";
+const INSTANCE_THREE: &str = "00112233445566778899aabbccddeeff";
 
 /// `world()` as the test's own user, whose files the extension's private
 /// registry checks require.
@@ -463,4 +465,13 @@ fn a_live_pi_or_omp_binding_is_offered_a_reply_command() {
     world.table.remove(600);
     assert!(!injector.can_reply(&pi));
     assert!(injector.can_reply(&omp));
+    // A holder with a second binding, in either flavor, names neither, so
+    // neither is offered a reply command.
+    world.table.insert(600, own(1, 600));
+    bind(&world, SessionKind::Pi, 600, PI, INSTANCE);
+    bind(&world, SessionKind::Pi, 600, PI_TWO, INSTANCE_TWO);
+    assert!(!injector.can_reply(&pi));
+    assert!(!injector.can_reply(&Target::new(SessionKind::Pi, PI_TWO)));
+    bind(&world, SessionKind::Pi, 700, PI_THREE, INSTANCE_THREE);
+    assert!(!injector.can_reply(&omp));
 }

@@ -199,7 +199,7 @@ impl Binding {
     }
 
     /// The pid and kernel start time of the process proven to hold it.
-    fn holder(&self) -> Option<(i32, u64)> {
+    pub fn holder(&self) -> Option<(i32, u64)> {
         let mut parts = self.reference.split(':').skip(1);
         let pid = parts.next()?.parse().ok()?;
         let start = parts.next()?.parse().ok()?;
