@@ -301,9 +301,35 @@ fn clean_terminal(
 
 #[derive(Default)]
 struct Line {
-    pushed: VecDeque<Delivery>,
+    /// Pushed deliveries, each with how many queue reads had started when
+    /// it was pushed.
+    pushed: VecDeque<(Delivery, u64)>,
     drain: bool,
     running: bool,
+    /// Queue reads started.
+    reads: u64,
+    /// The number (in `reads`) of the last read that finished.
+    read_done: u64,
+}
+
+impl Line {
+    /// The next work: a pushed delivery once a read that started after it
+    /// was pushed has finished (that read handed over anything queued before
+    /// it, oldest first), else a requested read, else what was pushed. So a
+    /// requested read goes before a push, but at most one does (#2290
+    /// review): reads requested over and over cannot hold pushed work back.
+    fn next(&mut self) -> Option<Work> {
+        let read_since = |pushed_at: u64| self.read_done > pushed_at;
+        if self.pushed.front().is_some_and(|(_, at)| read_since(*at)) || !self.drain {
+            return self
+                .pushed
+                .pop_front()
+                .map(|(delivery, _)| Work::Pushed(Box::new(delivery)));
+        }
+        self.drain = false;
+        self.reads += 1;
+        Some(Work::Drain(self.reads))
+    }
 }
 
 /// The delivery runtime's memory. Nothing here needs to survive a
@@ -370,7 +396,8 @@ struct QueueRead {
 
 enum Work {
     Pushed(Box<Delivery>),
-    Drain,
+    /// A queue read, by its number in `Line::reads`.
+    Drain(u64),
 }
 
 pub(crate) fn preview(delivery: &Delivery) -> String {
@@ -655,6 +682,46 @@ mod send_order_tests {
             ..dm("1", Some(1_000))
         };
         assert_eq!(SendOrder::of(&post), None);
+    }
+
+    fn next(line: &mut Line) -> &'static str {
+        match line.next() {
+            Some(Work::Pushed(_)) => "pushed",
+            Some(Work::Drain(_)) => "read",
+            None => "none",
+        }
+    }
+
+    // #2290 review: a requested read goes before a push, but only one; a
+    // push with no read requested goes at once, as before.
+    #[test]
+    fn at_most_one_requested_read_goes_before_a_push() {
+        let mut line = Line::default();
+        line.pushed.push_back((dm("1", Some(1)), line.reads));
+        assert_eq!(next(&mut line), "pushed");
+        assert_eq!(next(&mut line), "none");
+
+        line.pushed.push_back((dm("2", Some(2)), line.reads));
+        line.drain = true;
+        assert_eq!(next(&mut line), "read");
+        // Asked for again while that read ran: the push still goes first
+        // once it finished.
+        line.drain = true;
+        line.read_done = line.reads;
+        assert_eq!(next(&mut line), "pushed");
+        assert_eq!(next(&mut line), "read");
+
+        // Pushed while a read was running: that read may have started
+        // before older messages were queued, so a requested one goes first.
+        line.drain = true;
+        assert_eq!(next(&mut line), "read");
+        line.pushed.push_back((dm("3", Some(3)), line.reads));
+        line.read_done = line.reads;
+        line.drain = true;
+        assert_eq!(next(&mut line), "read");
+        line.read_done = line.reads;
+        line.drain = true;
+        assert_eq!(next(&mut line), "pushed");
     }
 
     #[test]
@@ -1010,7 +1077,10 @@ impl Core {
             let mut state = self.delivery.lock().unwrap();
             let line = state.lines.entry(name.into()).or_default();
             match delivery {
-                Some(delivery) => line.pushed.push_back(delivery),
+                Some(delivery) => {
+                    let reads = line.reads;
+                    line.pushed.push_back((delivery, reads));
+                }
                 None => line.drain = true,
             }
             !std::mem::replace(&mut line.running, true)
@@ -1065,15 +1135,14 @@ impl Core {
                 // A requested queue read goes before what was pushed
                 // meanwhile: it hands the queue over oldest first, so a
                 // message that only the read has (its push missed or
-                // unreadable) is never overtaken by a later pushed one
-                // (#2288).
-                if std::mem::take(&mut line.drain) {
-                    Work::Drain
-                } else if let Some(delivery) = line.pushed.pop_front() {
-                    Work::Pushed(Box::new(delivery))
-                } else {
-                    state.lines.remove(&name);
-                    return;
+                // unreadable) is not overtaken by a later pushed one
+                // (#2288). `Line::next` bounds that to one read.
+                match line.next() {
+                    Some(work) => work,
+                    None => {
+                        state.lines.remove(&name);
+                        return;
+                    }
                 }
             };
             match work {
@@ -1082,24 +1151,28 @@ impl Core {
                         self.handle(&delivery, &registration, true).await;
                     }
                 }
-                Work::Drain => {
-                    let Some(read) = self.drain(&name).await else {
+                Work::Drain(number) => {
+                    let read = self.drain(&name).await;
+                    let mut state = self.delivery.lock().unwrap();
+                    let Some(line) = state.lines.get_mut(&name) else {
                         continue;
                     };
-                    let mut state = self.delivery.lock().unwrap();
-                    if let Some(line) = state.lines.get_mut(&name) {
-                        let pushed = line.pushed.len();
-                        // What the read handed over is not handled again from
-                        // its pushed copy. After a full page nothing pushed
-                        // goes either: messages queued after the page, but
-                        // before a pushed one, were not read yet. Each stays in
-                        // the queue, and the next read hands them over oldest
-                        // first.
-                        line.pushed
-                            .retain(|delivery| !read.full && !read.ids.contains(&delivery.id));
-                        if read.full && line.pushed.len() < pushed {
-                            line.drain = true;
-                        }
+                    // Finished, read or not: a failing queue never holds
+                    // pushed work back for more than this one read.
+                    line.read_done = number;
+                    let Some(read) = read else {
+                        continue;
+                    };
+                    let pushed = line.pushed.len();
+                    // What the read handed over is not handled again from its
+                    // pushed copy. After a full page nothing pushed goes
+                    // either: messages queued after the page, but before a
+                    // pushed one, were not read yet. Each stays in the queue,
+                    // and the next read hands them over oldest first.
+                    line.pushed
+                        .retain(|(delivery, _)| !read.full && !read.ids.contains(&delivery.id));
+                    if read.full && line.pushed.len() < pushed {
+                        line.drain = true;
                     }
                 }
             }
