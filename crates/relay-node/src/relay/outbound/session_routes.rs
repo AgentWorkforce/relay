@@ -28,6 +28,7 @@ pub const SESSION_ROUTES: &[(&str, &str)] = &[
     ("POST", "/codex/stop-hook"),
     ("POST", "/copilot/hook"),
     ("POST", "/copilot/mcp"),
+    ("POST", "/antigravity/hook"),
     ("POST", "/turn-end/take"),
     ("POST", "/turn-end/shown"),
     ("POST", "/claude/attestation"),

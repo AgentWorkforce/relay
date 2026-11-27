@@ -169,10 +169,10 @@ impl Core {
         }
         let injector = self.plugins.injector.clone();
         let spawner = self.plugins.spawner.clone();
-        let Some(registered) = self
-            .store
-            .read(|store| crate::relay::copilot::delivery_registration(store, registration))
-        else {
+        let Some(registered) = self.store.read(|store| {
+            crate::relay::copilot::delivery_registration(store, registration)
+                .and_then(|r| crate::relay::antigravity::delivery_registration(store, &r))
+        }) else {
             return InjectOutcome::InDoubt(
                 "The Copilot registration changed before delivery.".into(),
             );

@@ -39,6 +39,8 @@ pub struct FakeProcesses {
     pub trusted_vscode: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub trusted_copilot: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub trusted_copilot_bundles: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    pub trusted_antigravity: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    pub trusted_antigravity_bundles: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub trusted_cursor: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     /// Executables that count as a trusted Grok CLI whatever their name.
     pub trusted_grok: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
@@ -121,6 +123,18 @@ impl ProcessTable for FakeProcesses {
         self.trusted_copilot_bundles
             .lock()
             .unwrap()
+            .contains(bundle)
+    }
+    fn is_trusted_antigravity(&self, _pid: i32, executable: &Path) -> bool {
+        self.trusted_antigravity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(executable)
+    }
+    fn is_trusted_antigravity_bundle(&self, bundle: &Path) -> bool {
+        self.trusted_antigravity_bundles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .contains(bundle)
     }
 

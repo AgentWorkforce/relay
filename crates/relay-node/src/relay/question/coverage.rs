@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 use QuestionCoverageState::{Covered, NotApplicable, NotCovered, Partial};
 
 /// Every kind of session, in the order the table lists them.
-pub const KINDS: [SessionKind; 16] = [
+pub const KINDS: [SessionKind; 17] = [
     SessionKind::ClaudeTerminal,
     SessionKind::ClaudeCloud,
     SessionKind::Codex,
@@ -32,6 +32,7 @@ pub const KINDS: [SessionKind; 16] = [
     SessionKind::MuseOpen,
     SessionKind::OpenClaw,
     SessionKind::Hermes,
+    SessionKind::Antigravity,
 ];
 
 /// One kind's row: its name as people know it, its state and why.
@@ -81,6 +82,12 @@ so no Cursor hook can take it over.",
             "ask_user, through Agent Relay's Copilot hooks (VS Code on macOS). Its argument names \
 are from Copilot's user-input handler, not yet checked against the hook's own payload or in a \
 live session.",
+        ),
+        SessionKind::Antigravity => row(
+            "Antigravity",
+            NotCovered,
+            "Not yet: Agent Relay's Antigravity hooks deliver messages but do not take over \
+ask_question tool calls.",
         ),
         SessionKind::OpenCode => row(
             "OpenCode",
@@ -218,6 +225,7 @@ mod tests {
             SessionKind::MuseOpen => 13,
             SessionKind::OpenClaw => 14,
             SessionKind::Hermes => 15,
+            SessionKind::Antigravity => 16,
         }
     }
 
