@@ -127,9 +127,12 @@ impl CodexRoutes for SystemCodexRoutes {
             return Err(QueueError::Failed("not a Codex thread id".into()));
         }
         // A Conductor session's thread is queued with Conductor's own Codex,
-        // the one draining it, which may be the only Codex installed.
-        let conductor = processes::conductor_executable(self.table.as_ref(), self.uid, thread);
-        let Some(executable) = conductor
+        // and a Codex app chat's with the app's: the one draining it, which
+        // may be the only Codex installed.
+        let table = self.table.as_ref();
+        let host = processes::conductor_executable(table, self.uid, thread)
+            .or_else(|| processes::codex_app_executable(table, self.uid, thread));
+        let Some(executable) = host
             .as_deref()
             .filter(|executable| self.supports_queue(executable))
             .or(self.config.executable.as_deref())

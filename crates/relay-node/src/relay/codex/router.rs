@@ -1766,6 +1766,56 @@ mod tests {
         assert_eq!(runs[0].1, ["queue", "--help"]);
     }
 
+    // A chat open in the Codex desktop app (the ChatGPT app) is live and
+    // queued with the app's own bundled Codex, which runs it once idle.
+    // Unix paths: macOS app bundles are recognised only there.
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_app_chat_is_live_and_queued_with_the_apps_codex() {
+        use crate::relay::codex::processes::tests::{lock, process};
+        let home = tempfile::tempdir().unwrap();
+        let bundled = std::path::PathBuf::from(
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        );
+        let table = crate::relay::process::FakeProcesses::default();
+        table.trust(bundled.clone());
+        table.insert(
+            501,
+            FakeProcess {
+                executable: Some(std::path::PathBuf::from(
+                    "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif)",
+                )),
+                ..process(1, 6)
+            },
+        );
+        table.insert(
+            600,
+            FakeProcess {
+                executable: Some(bundled.clone()),
+                parent: 501,
+                open_files: vec![lock(THREAD)],
+                ..codex_process(10, &["codex", "app-server", "--analytics-default-enabled"])
+            },
+        );
+        let ok = || RunOutcome::Exited {
+            code: 0,
+            stdout: format!("Queued message q1 for thread {THREAD}.\n"),
+            stderr: String::new(),
+        };
+        let runner = Arc::new(FakeRunner::answering([ok(), ok()]));
+        let mut config = config(home.path());
+        config.executable = None;
+        let routes = SystemCodexRoutes::with_runner(config, Arc::new(table), UID, runner.clone());
+        assert!(routes.terminal_live(THREAD));
+        assert!(!routes.conductor_owned(THREAD));
+        assert_eq!(routes.queue_send(THREAD, "hello"), Ok(()));
+        let runs = runner.runs.lock().unwrap().clone();
+        assert_eq!(runs.len(), 2);
+        assert!(runs.iter().all(|run| run.0 == bundled));
+        assert_eq!(runs[0].1, ["queue", "--help"]);
+        assert_eq!(runs[1].1, ["queue", "--thread", THREAD, "--message=hello"]);
+    }
+
     // CodexQueueBridge: an older Codex without `queue`, a slow one, a
     // missing one, and Codex's refusal.
     #[test]
