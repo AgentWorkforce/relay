@@ -1765,6 +1765,80 @@ async fn a_requested_queue_read_goes_before_a_later_push() {
     h.stop().await;
 }
 
+// #2290 review: a message the provider holds behind another one it already
+// has (Codex's hidden history) holds nothing back in the delivery core, so
+// the later message can finish the handoff the provider began instead of
+// both waiting on each other.
+#[tokio::test]
+async fn a_message_the_provider_holds_back_does_not_hold_later_ones() {
+    use agent_relay_node::relay::codex::router::BEHIND_HIDDEN;
+    let h = Harness::start_with_timing(|_| None, |_, _| {}, ordering_timing()).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    h.injector
+        .then(InjectOutcome::Waiting(BEHIND_HIDDEN.into()));
+    let (first, m1) = h.fake.send_dm("alice", "codex-api", "the original");
+    eventually("the first waits", || attempts(&h).len() == 1).await;
+    let (second, m2) = h.fake.send_dm("alice", "codex-api", "the follow-up");
+    eventually("both acked", || {
+        delivered(&h.fake, &first).as_deref() == Some("acked")
+            && delivered(&h.fake, &second).as_deref() == Some("acked")
+    })
+    .await;
+    assert_eq!(attempts(&h), [m1.clone(), m2, m1]);
+    h.stop().await;
+}
+
+// #2290 review: after a full page, a pushed message does not go before the
+// messages queued after the page and before it: the next read hands them
+// over in order.
+#[tokio::test]
+async fn a_push_does_not_overtake_messages_beyond_a_full_page() {
+    // No periodic read comes along to cover for it: only the reads asked for.
+    let timing = DeliveryTiming {
+        safety_poll: Duration::from_secs(60),
+        fast_poll: Duration::from_secs(60),
+        ..ordering_timing()
+    };
+    let h = Harness::start_with_timing(|_| None, |_, _| {}, timing).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    h.injector.hold.store(true, Ordering::SeqCst);
+    let (_, m0) = h.fake.send_dm("alice", "codex-api", "busy");
+    h.core.request_drain("codex-api");
+    eventually("the line is busy", || {
+        h.injector.holding.load(Ordering::SeqCst)
+    })
+    .await;
+    // One more than a page, read only from the queue, then a pushed one.
+    let page = agent_relay_node::relay::client::QUEUE_PAGE as usize;
+    let texts: Vec<String> = (0..=page).map(|n| format!("backlog {n}")).collect();
+    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let backlog = h.fake.send_dms("alice", "codex-api", &texts);
+    h.core.request_drain("codex-api");
+    let (last, m_last) = h.fake.send_dm("alice", "codex-api", "the follow-up");
+    h.core.wake(
+        "codex-api".into(),
+        Some(json!({"type": "deliver", "delivery_id": last, "msg_id": m_last,
+            "payload": {"type": "dm.received", "data": {"message": {"id": m_last, "agent_name": "alice", "text": "the follow-up"}}}})),
+    );
+    h.injector.hold.store(false, Ordering::SeqCst);
+    eventually("the follow-up acked", || {
+        delivered(&h.fake, &last).as_deref() == Some("acked")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut expected = vec![m0];
+    expected.extend(backlog.into_iter().map(|(_, message)| message));
+    expected.push(m_last);
+    assert_eq!(attempts(&h), expected);
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn own_and_empty_messages_are_acked_without_injecting() {
     // An ordinary channel post reaches an agent only from a channel it

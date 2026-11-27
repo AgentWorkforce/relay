@@ -485,7 +485,7 @@ impl Core {
                 agent: agent.into(),
                 after: Instant::now() + delay,
                 failures: 0,
-                direct_sent_at: None,
+                send_order: None,
                 holds_later: false,
                 handed_over: false,
             },
