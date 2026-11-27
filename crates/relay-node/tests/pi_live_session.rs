@@ -382,23 +382,16 @@ fn an_existing_pi_tui_loads_relay_and_receives_idle_and_busy_messages_once() {
         InjectOutcome::Delivered,
         "confirmed deliveries must settle after their old runtime reloads"
     );
+    // The registration made before the reload follows the session.
     assert!(matches!(
-        send("message-3", "Must not send"),
-        InjectOutcome::Refused(_)
-    ));
-    let new_agent = registration(&agent.target.id, &replacement.reference);
-    assert!(matches!(
-        injector.inject_registered(
-            &new_agent,
-            "message-3",
-            "message-3",
-            "[via Agent Relay] After reload"
-        ),
+        send("message-3", "[via Agent Relay] After reload"),
         InjectOutcome::Accepted(_)
     ));
     until("answer after reload", &output, || {
-        injector.final_answer_registered(&new_agent, &MessageRef::of("message-3"))
+        injector.final_answer_registered(&agent, &MessageRef::of("message-3"))
     });
+    // As does one made after it.
+    let new_agent = registration(&agent.target.id, &replacement.reference);
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     input.write_all(b"/new\r").unwrap();
     input.flush().unwrap();
