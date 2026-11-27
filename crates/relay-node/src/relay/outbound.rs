@@ -409,8 +409,11 @@ pub enum Purpose {
 }
 
 fn is_supported_kind(kind: SessionKind) -> bool {
-    use SessionKind::{ClaudeTerminal, Codex, CursorCli, Devin};
-    matches!(kind, Codex | ClaudeTerminal | Devin | CursorCli)
+    use SessionKind::{Antigravity, ClaudeTerminal, Codex, CursorCli, Devin};
+    matches!(
+        kind,
+        Codex | ClaudeTerminal | Devin | CursorCli | Antigravity
+    )
 }
 
 fn connect_gone_error(code: &str, message: String) -> OutboundError {
@@ -503,6 +506,7 @@ impl Outbound {
             ("POST", "/codex/stop-hook" | "/claude/attestation" | "/copilot/hook") => {
                 self.hook_route(pid, uid, request).await
             }
+            ("POST", "/antigravity/hook") => self.hook_route(pid, uid, request).await,
             ("POST", "/copilot/mcp") => self.hook_route(pid, uid, request).await,
             ("POST", "/turn-end/take" | "/turn-end/shown") => {
                 self.turn_end_route(pid, uid, request).await

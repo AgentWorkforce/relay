@@ -111,7 +111,9 @@ impl Target {
                 })
             }
             SessionKind::Devin => crate::relay::devin::is_session_id(&self.id),
-            SessionKind::Copilot | SessionKind::Droid => is_uuid(&self.id),
+            SessionKind::Copilot | SessionKind::Droid | SessionKind::Antigravity => {
+                is_uuid(&self.id)
+            }
             SessionKind::CursorCli => crate::relay::cursor_cli::is_session_id(&self.id),
             SessionKind::OpenClaw => crate::relay::openclaw::is_agent_id(&self.id),
             SessionKind::Hermes => crate::relay::hermes::is_profile(&self.id),

@@ -44,9 +44,10 @@ pub const RECORDS: [&str; 3] = [
 /// spawned here, as approvals from the owner's delegates let theirs; `connect_detected_tools` turns on the routes into the tools found here).
 /// An agent may turn them off. A setting whose
 /// value is `"on"`/`"off"` rather than a boolean counts `"on"` as on.
-pub const PERSON_TURNS_ON: [&str; 30] = [
+pub const PERSON_TURNS_ON: [&str; 31] = [
     "accept_spawns",
     "allow_self_registration",
+    crate::relay::antigravity::DIRECT_DELIVERY_SETTING,
     "auto_activate",
     crate::relay::claude_dirs::CLOUD_SETTING,
     "codex_stop_hook",
@@ -219,6 +220,11 @@ fn unavailable(key: &str) -> String {
     }
     if key == crate::relay::delegation::SETTING || key == crate::relay::delegation::SPAWN_SETTING {
         return crate::relay::delegation::GATE_ONLY.to_string();
+    }
+    if key == crate::relay::antigravity::DIRECT_DELIVERY_SETTING
+        && !crate::relay::antigravity::proof::SUPPORTED
+    {
+        return "Antigravity hook delivery is currently available only on macOS.".to_string();
     }
     let harness = match key {
         "grok_leader" => Some("Grok"),

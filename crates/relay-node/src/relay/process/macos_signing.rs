@@ -50,6 +50,15 @@ impl SignatureCache {
     pub(super) fn trusted_cursor(&self, path: &Path) -> bool {
         installed_app_file(path) && self.0.trusted(path, identity, verify_cursor_signature)
     }
+
+    /// Google Antigravity: an installed app file validly signed by Google
+    /// (team `EQHXZ8M8AV`).
+    pub(super) fn trusted_antigravity(&self, path: &Path) -> bool {
+        installed_app_file(path)
+            && self
+                .0
+                .trusted(path, identity, |p| verify_signature(p, GOOGLE))
+    }
 }
 
 /// Whether `path` sits where an installed app does: under `/Applications`
@@ -112,6 +121,15 @@ fn core_foundation_url(path: &Path) -> Option<core_foundation::url::CFURL> {
 
 const MICROSOFT: &str = "anchor apple generic and certificate leaf[subject.OU] = \"UBF8T346G9\"";
 const GITHUB: &str = "anchor apple generic and certificate leaf[subject.OU] = \"VEKTX9H2N7\"";
+const GOOGLE: &str = "anchor apple generic and certificate leaf[subject.OU] = \"EQHXZ8M8AV\"";
+
+pub(super) fn trusted_antigravity_process(pid: i32) -> bool {
+    trusted_process(pid, GOOGLE)
+}
+
+pub(super) fn trusted_antigravity_bundle(bundle: &Path) -> bool {
+    trusted_bundle(bundle, GOOGLE, "com.google.antigravity")
+}
 
 pub(super) fn trusted_copilot_process(pid: i32) -> bool {
     trusted_process(pid, GITHUB)

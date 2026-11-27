@@ -307,6 +307,11 @@ impl LocalSessions {
                 &*self.scans,
                 self.config.uid,
             )?,
+            SessionPartition::Antigravity => crate::relay::antigravity::discover(
+                &self.config.antigravity,
+                &*self.scans,
+                self.config.uid,
+            )?,
             SessionPartition::CursorCli => {
                 cursor_cli::discover(&self.config.cursor, &*self.scans, self.config.uid)
             }

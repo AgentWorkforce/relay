@@ -105,6 +105,7 @@ pub enum SessionPartition {
     Devin,
     CursorCli,
     Copilot,
+    Antigravity,
     OpenClaw,
     Hermes,
 }
@@ -122,6 +123,7 @@ impl SessionPartition {
             SessionKind::Devin => Self::Devin,
             SessionKind::CursorCli => Self::CursorCli,
             SessionKind::Copilot => Self::Copilot,
+            SessionKind::Antigravity => Self::Antigravity,
             SessionKind::OpenClaw => Self::OpenClaw,
             SessionKind::Hermes => Self::Hermes,
         }
@@ -148,6 +150,21 @@ pub trait SessionDirectory: Send + Sync + 'static {
     /// A peer-authenticated Copilot hook; ordinary callers cannot name chats
     /// held by a multiplexing runtime.
     fn copilot_hook(&self, _pid: i32, _payload: &serde_json::Value) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// The trusted command-line helper for Antigravity hooks.
+    fn configure_antigravity_helper(&self, _executable: std::path::PathBuf) {}
+
+    /// A peer-authenticated Antigravity lifecycle hook request. `still_current`
+    /// fences workspace/identity-generation changes immediately before claiming
+    /// an inbox message.
+    fn antigravity_hook(
+        &self,
+        _pid: i32,
+        _payload: &serde_json::Value,
+        _still_current: &(dyn Fn() -> bool + Sync),
+    ) -> Option<serde_json::Value> {
         None
     }
 

@@ -79,6 +79,11 @@ impl LocalSessions {
                     || crate::relay::cursor_cli::is_cursor_process(table, current)
                     || crate::relay::cursor_cli::editor::is_editor_host(table, current)
                     || crate::relay::hook_agents::is_copilot_process(table, current)
+                    || crate::relay::antigravity::proof::is_antigravity_process(
+                        table,
+                        current,
+                        self.config.uid,
+                    )
                     || super::pi_caller::is_holder(&self.config, table, current);
                 if agent {
                     return false;
@@ -117,6 +122,11 @@ impl LocalSessions {
                     || crate::relay::cursor_cli::is_cursor_process(table, current)
                     || crate::relay::cursor_cli::editor::is_editor_host(table, current)
                     || crate::relay::hook_agents::is_copilot_process(table, current)
+                    || crate::relay::antigravity::proof::is_antigravity_process(
+                        table,
+                        current,
+                        self.config.uid,
+                    )
                     || super::pi_caller::is_holder(&self.config, table, current)
                 {
                     return true;

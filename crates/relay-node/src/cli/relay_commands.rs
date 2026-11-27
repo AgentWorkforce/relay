@@ -297,6 +297,13 @@ pub enum RelayCommands {
         #[arg(long, value_parser = ["start", "before", "tool", "stop"])]
         event: String,
     },
+    /// Antigravity's native lifecycle hook (`~/.gemini/config/hooks.json`).
+    AntigravityHook {
+        #[arg(long)]
+        dev: bool,
+        #[arg(long, value_parser = ["start", "pre", "post", "stop"])]
+        event: String,
+    },
     /// Agent Relay's Cursor CLI hook, which Cursor runs after each tool call,
     /// when a turn ends and before a prompt starts one: hands the session
     /// the relay messages waiting for it (`additional_context`, or
@@ -687,6 +694,7 @@ pub fn run(command: RelayCommands) -> Result<()> {
         } => relay::cli::codex_stop_hook(socket.as_deref(), &build(dev, profile)?),
         RelayCommands::DevinHook { dev } => relay::cli::devin_hook(dev),
         RelayCommands::CopilotHook { dev, event } => relay::cli::copilot_hook(dev, &event),
+        RelayCommands::AntigravityHook { dev, event } => relay::cli::antigravity_hook(dev, &event),
         RelayCommands::CursorHook { dev, wait } => relay::cli::cursor_hook(dev, wait),
         RelayCommands::ClaudeSessionHook {
             dev,

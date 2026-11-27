@@ -215,15 +215,10 @@ impl Core {
                 let units = 30f64.min(3.0 * 2f64.powi(failures as i32 - 1));
                 longest = longest.max(units);
                 let after = Instant::now() + self.config.delivery_timing.retry_unit.mul_f64(units);
-                let agent = settle.registration.name.clone();
-                state.retries.insert(
-                    post.id.clone(),
-                    Retry {
-                        agent,
-                        after,
-                        failures,
-                    },
-                );
+                let agent = &settle.registration.name;
+                state
+                    .retries
+                    .insert(post.id.clone(), Retry::new(agent, after, failures, post));
             }
         }
         self.drain_later(settle.registration, longest + 0.2);
@@ -281,13 +276,9 @@ impl Core {
         {
             let mut state = self.delivery_state();
             let after = Instant::now() + self.config.delivery_timing.retry_unit.mul_f64(5.0);
-            let agent = settle.registration.name.clone();
+            let agent = &settle.registration.name;
             for post in settle.posts {
-                let retry = Retry {
-                    agent: agent.clone(),
-                    after,
-                    failures: 0,
-                };
+                let retry = Retry::new(agent, after, 0, post);
                 state.retries.insert(post.id.clone(), retry);
             }
         }

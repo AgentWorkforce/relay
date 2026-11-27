@@ -45,7 +45,8 @@ fn supported(kind: SessionKind) -> bool {
         | SessionKind::OpenCodeOpen
         | SessionKind::Devin
         | SessionKind::CursorCli
-        | SessionKind::Copilot => true,
+        | SessionKind::Copilot
+        | SessionKind::Antigravity => true,
     }
 }
 
@@ -218,7 +219,10 @@ impl Core {
             return Err(Fence::Changed);
         }
         self.store
-            .read(|store| crate::relay::copilot::delivery_registration(store, expected))
+            .read(|store| {
+                crate::relay::copilot::delivery_registration(store, expected)
+                    .and_then(|r| crate::relay::antigravity::delivery_registration(store, &r))
+            })
             .ok_or(Fence::Registration)
     }
 }

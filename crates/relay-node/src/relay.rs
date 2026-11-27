@@ -58,6 +58,7 @@
 pub mod activity;
 pub mod admission;
 pub mod agents;
+pub mod antigravity;
 pub mod app_store;
 pub mod automatic_edit;
 pub mod backoff;

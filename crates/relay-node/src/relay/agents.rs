@@ -2127,6 +2127,7 @@ mod tests {
             (SessionKind::Devin, "Devin session"),
             (SessionKind::CursorCli, "Cursor CLI session"),
             (SessionKind::Copilot, "Copilot chat"),
+            (SessionKind::Antigravity, "Antigravity session"),
             (SessionKind::OpenClaw, "OpenClaw agent"),
             (SessionKind::Hermes, "Hermes"),
             (SessionKind::Pi, "Pi session"),

@@ -14,6 +14,9 @@ impl LocalInjector {
             SessionKind::Copilot => crate::relay::copilot::send(
                 &self.config.copilot, &*self.table, self.config.uid, &registration.target.id,
                 &format!("{}:{}", registration.agent_id, registration.registered_at), message_id, text),
+            SessionKind::Antigravity => crate::relay::antigravity::send(
+                &self.config.antigravity, &*self.table, self.config.uid, &registration.target.id,
+                &format!("{}:{}", registration.agent_id, registration.registered_at), message_id, text),
             kind @ (SessionKind::Pi | SessionKind::Omp) => match self.config.extension(kind) {
                 Some(extension) => crate::relay::pi::send(
                     extension,

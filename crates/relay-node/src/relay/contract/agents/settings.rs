@@ -290,6 +290,12 @@ pub struct SettingsValues {
     /// never run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor_direct_delivery: Option<bool>,
+    /// Whether Agent Relay's lifecycle hooks are in Antigravity's
+    /// `~/.gemini/config/hooks.json`, so an Antigravity conversation gets its
+    /// messages between invocations or when its turn ends. Off unless turned
+    /// on. Absent where Antigravity has never run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub antigravity_direct_delivery: Option<bool>,
     /// Whether agents registered from now on join #general, so its posts
     /// reach them as turns. Off unless turned on; agents already registered
     /// keep the channels they are in. Absent in older cores.
@@ -813,6 +819,15 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "bool")]
     pub cursor_direct_delivery: Option<bool>,
+    /// Adds or removes Agent Relay's lifecycle hooks in Antigravity's
+    /// `~/.gemini/config/hooks.json`.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub antigravity_direct_delivery: Option<bool>,
     /// Whether agents registered from now on join #general.
     #[serde(
         default,

@@ -88,6 +88,11 @@ pub enum SessionKind {
     /// relay sender gets a Hermes session of its own (`relay::hermes`).
     #[serde(rename = "hermes")]
     Hermes,
+    /// An Antigravity desktop conversation held by Antigravity's local
+    /// `language_server`, reached through lifecycle hooks in
+    /// `~/.gemini/config/hooks.json` (`relay::antigravity`).
+    #[serde(rename = "antigravity")]
+    Antigravity,
 }
 
 impl SessionKind {
@@ -109,6 +114,7 @@ impl SessionKind {
             SessionKind::Hermes => "hermes",
             SessionKind::Pi => "pi",
             SessionKind::Omp => "omp",
+            SessionKind::Antigravity => "antigravity",
         }
     }
 

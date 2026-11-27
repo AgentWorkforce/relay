@@ -142,6 +142,13 @@ pub trait ProcessTable: Send + Sync {
     fn is_trusted_copilot_bundle(&self, _bundle: &Path) -> bool {
         false
     }
+    /// Google-signed Antigravity desktop code, checked against its live process.
+    fn is_trusted_antigravity(&self, _pid: i32, _executable: &Path) -> bool {
+        false
+    }
+    fn is_trusted_antigravity_bundle(&self, _bundle: &Path) -> bool {
+        false
+    }
     /// The running host must still name the bundle whose seal was checked.
     fn is_trusted_copilot_host(&self, pid: i32, executable: &Path, bundle: &Path) -> bool {
         self.executable(pid).as_deref() == Some(executable)
@@ -948,6 +955,8 @@ pub struct SystemProcesses {
     vscode_signatures: macos_signing::SignatureCache,
     #[cfg(target_os = "macos")]
     copilot_signatures: macos_signing::SignatureCache,
+    #[cfg(target_os = "macos")]
+    antigravity_signatures: macos_signing::SignatureCache,
     #[cfg(windows)]
     windows: windows::Cache,
 }
@@ -1192,6 +1201,13 @@ mod macos {
         fn is_trusted_copilot(&self, pid: i32, executable: &Path) -> bool {
             self.copilot_signatures.trusted_copilot(executable)
                 && macos_signing::trusted_copilot_process(pid)
+        }
+        fn is_trusted_antigravity(&self, pid: i32, executable: &Path) -> bool {
+            self.antigravity_signatures.trusted_antigravity(executable)
+                && macos_signing::trusted_antigravity_process(pid)
+        }
+        fn is_trusted_antigravity_bundle(&self, bundle: &Path) -> bool {
+            macos_signing::trusted_antigravity_bundle(bundle)
         }
         fn is_trusted_copilot_bundle(&self, bundle: &Path) -> bool {
             macos_signing::trusted_copilot_bundle(bundle)

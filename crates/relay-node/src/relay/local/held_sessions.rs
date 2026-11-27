@@ -31,6 +31,18 @@ impl LocalSessions {
                 {
                     return Vec::new();
                 }
+                if crate::relay::antigravity::proof::is_antigravity_process(table, current, uid) {
+                    let held = crate::relay::antigravity::proof::held(
+                        &self.config.antigravity,
+                        table,
+                        current,
+                        uid,
+                    )
+                    .into_iter()
+                    .map(|sid| Target::new(SessionKind::Antigravity, sid))
+                    .collect();
+                    return several(held);
+                }
                 if cursor_cli::editor::is_editor_host(table, current) {
                     let held = cursor_cli::editor::sessions(&self.config.cursor, table, uid)
                         .into_iter()
