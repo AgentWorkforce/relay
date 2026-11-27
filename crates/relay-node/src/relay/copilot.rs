@@ -61,6 +61,9 @@ impl CopilotConfig {
     pub fn hooks_file(&self) -> PathBuf {
         self.data_dir.join("hooks").join("agent-relay.json")
     }
+    pub(super) fn legacy_dev_hooks_file(&self) -> PathBuf {
+        self.data_dir.join("hooks").join("agent-relay-dev.json")
+    }
     /// The embedder chooses the installed helper, independently of user hook JSON.
     pub fn set_helper(&self, executable: PathBuf) {
         *self.helper.write().unwrap_or_else(|e| e.into_inner()) = executable;

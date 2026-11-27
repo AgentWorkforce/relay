@@ -44,6 +44,12 @@ impl CopilotSettings {
             if exists {
                 std::fs::remove_file(&path).map_err(|_| "Could not remove Copilot hooks.")?;
             }
+            let legacy = self.config.legacy_dev_hooks_file();
+            if let Ok(Some(value)) = document_at(&legacy) {
+                if matches_owned_document(&value, true) {
+                    std::fs::remove_file(&legacy).map_err(|_| "Could not remove Copilot hooks.")?;
+                }
+            }
             return Ok(());
         }
         let bytes = serde_json::to_vec_pretty(&managed_value(&self.config, &self.config.helper()))
@@ -60,12 +66,16 @@ impl CopilotSettings {
     }
 }
 fn managed_value(_config: &CopilotConfig, executable: &Path) -> Value {
+    managed_value_with_dev(executable, false)
+}
+fn managed_value_with_dev(executable: &Path, legacy_dev: bool) -> Value {
     let mut hooks = serde_json::Map::new();
     for (event, flag) in EVENTS {
         let command = format!(
-            "exec {} copilot-hook --event {}",
+            "exec {} copilot-hook --event {}{}",
             crate::relay::outbound::shell_quote(&executable.to_string_lossy()),
             flag,
+            if legacy_dev { " --dev" } else { "" },
         );
         hooks.insert((*event).into(), json!([{"type":"command","command":command,
             "timeoutSec":if *flag == "stop" { 3600 } else if *flag == "before" { 60 } else if *flag == "start" { 20 } else { 10 }}]));
@@ -106,32 +116,37 @@ fn owned_state(config: &CopilotConfig) -> io::Result<bool> {
     let Some(value) = document(config)? else {
         return Ok(false);
     };
+    Ok(matches_owned_document(&value, false))
+}
+fn matches_owned_document(value: &Value, legacy_dev: bool) -> bool {
     let Some(command) = value["hooks"]["sessionStart"][0]["command"].as_str() else {
-        return Ok(false);
+        return false;
     };
     let Ok(args) = shell_words::split(command) else {
-        return Ok(false);
+        return false;
     };
     let Some(helper) = args.get(1).filter(|p| !p.is_empty()).map(Path::new) else {
-        return Ok(false);
+        return false;
     };
-    let mut expected = managed_value(config, helper);
-    if value == expected {
-        return Ok(true);
+    let mut expected = managed_value_with_dev(helper, legacy_dev);
+    if value == &expected {
+        return true;
     }
     // Earlier managed adapters used a 20-second pre-tool timeout and the
     // initial adapter also used a 10-second start timeout. Recognize only
     // these complete owned documents; other edits still remain untouched.
     expected["hooks"]["preToolUse"][0]["timeoutSec"] = json!(20);
-    if value == expected {
-        return Ok(true);
+    if value == &expected {
+        return true;
     }
     expected["hooks"]["sessionStart"][0]["timeoutSec"] = json!(10);
-    Ok(value == expected)
+    value == &expected
 }
 fn document(config: &CopilotConfig) -> io::Result<Option<Value>> {
-    let path = config.hooks_file();
-    let metadata = match std::fs::symlink_metadata(&path) {
+    document_at(&config.hooks_file())
+}
+fn document_at(path: &Path) -> io::Result<Option<Value>> {
+    let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),

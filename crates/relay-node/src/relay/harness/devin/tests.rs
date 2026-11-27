@@ -431,7 +431,14 @@ fn dev_upgrade_recovers_delivers_and_stops_legacy_spawned_dev_worker() {
         &home.path().join("com.agentrelay.desktop"),
         table.clone(),
     );
-    let dev_adapter = DevinAdapter::new(&dev_cx);
+    let mut dev_adapter = DevinAdapter::new(&dev_cx);
+    let terminated = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captures = terminated.clone();
+    let processes = table.clone();
+    dev_adapter.terminate = Arc::new(move |_, process| {
+        captures.lock().unwrap().push(process);
+        processes.remove(process.pid);
+    });
     let prod_adapter = DevinAdapter::new(&prod_cx);
 
     let legacy_dir = legacy_dev_runtime(&dev_adapter.config);
@@ -572,4 +579,5 @@ fn dev_upgrade_recovers_delivers_and_stops_legacy_spawned_dev_worker() {
     dev_adapter.stop(&target, Some(&record.host));
     server.join().unwrap();
     assert!(!dev_adapter.alive(&target, Some(&record.host)));
+    assert_eq!(*terminated.lock().unwrap(), vec![record.child, record.host]);
 }

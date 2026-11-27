@@ -249,7 +249,10 @@ pub(crate) fn deliver_with_legacy_dev(
     None
 }
 
+type Terminate = Arc<dyn Fn(&dyn ProcessTable, SpawnedProcess) + Send + Sync>;
+
 pub struct DevinAdapter {
+    terminate: Terminate,
     executable: Option<PathBuf>,
     config: DevinConfig,
     table: Arc<dyn ProcessTable>,
@@ -293,7 +296,7 @@ impl DevinAdapter {
         }
         if root.is(self.table.process(root.pid)) {
             for process in owned {
-                stop_process(self.table.as_ref(), process.pid, Some(process.start));
+                (self.terminate)(self.table.as_ref(), SpawnedProcess::of(process));
             }
         }
     }
@@ -301,6 +304,9 @@ impl DevinAdapter {
         let executable = executable(cx);
         let build = Build::of(&cx.app_data_dir);
         Self {
+            terminate: Arc::new(|table, process| {
+                stop_process(table, process.pid, Some(process.start))
+            }),
             build,
             executable,
             config: DevinConfig::from_env(&|k| cx.var(k), &cx.home),
@@ -570,16 +576,8 @@ impl SpawnFacet for DevinAdapter {
                     std::thread::sleep(Duration::from_millis(20));
                 }
             }
-            stop_process(
-                self.table.as_ref(),
-                record.child.pid,
-                Some(record.child.start),
-            );
-            stop_process(
-                self.table.as_ref(),
-                record.host.pid,
-                Some(record.host.start),
-            );
+            (self.terminate)(self.table.as_ref(), record.child);
+            (self.terminate)(self.table.as_ref(), record.host);
         }
     }
     fn observe(&self, agents: &[Watched]) -> Vec<Observation> {
