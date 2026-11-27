@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { readWorkspaceStore, setWorkspaceKey } from './workspace-store.js';
 import { resolveActiveWorkspace, resolveWorkspaceByKey } from './workspaces.js';
-import { AUTH_FILE_PATH } from './types.js';
+import { AUTH_FILE_PATH, authFilePath } from './types.js';
 
 let dir: string;
 const originalEnv = { ...process.env };
@@ -81,6 +81,53 @@ describe('resolveActiveWorkspace', () => {
     );
     const init = fetchSpy.mock.calls[0][1] as RequestInit;
     expect(new Headers(init.headers).get('authorization')).toBe('Bearer access-token');
+  });
+
+  it('reads stored cloud auth from env.AGENT_RELAY_HOME when resolving the active workspace', async () => {
+    const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ws-isolated-'));
+    try {
+      const env: NodeJS.ProcessEnv = { AGENT_RELAY_HOME: isolatedHome };
+      setWorkspaceKey('dev', 'rk_live_dev', env);
+      fs.writeFileSync(
+        authFilePath(env),
+        JSON.stringify({
+          apiUrl: 'https://dev.cloud.example.test',
+          accessToken: 'isolated-access-token',
+          refreshToken: 'isolated-refresh-token',
+          accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        })
+      );
+      const fetchSpy = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              workspace: {
+                name: 'Dev',
+                key: 'rk_live_dev',
+                cloudWorkspaceId: 'rw_dev',
+                relaycastWorkspaceId: 'rc_dev',
+                relaycastApiKey: 'rk_live_dev',
+                relayfileWorkspaceId: 'rw_dev',
+                relayauthWorkspaceId: 'rw_dev',
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+      );
+      vi.stubGlobal('fetch', fetchSpy);
+
+      await expect(resolveActiveWorkspace({ env })).resolves.toMatchObject({
+        cloudWorkspaceId: 'rw_dev',
+        apiUrl: 'https://dev.cloud.example.test',
+      });
+      expect(String(fetchSpy.mock.calls[0][0])).toBe(
+        'https://dev.cloud.example.test/api/v1/workspaces/rk_live_dev/resolve'
+      );
+      const init = fetchSpy.mock.calls[0][1] as RequestInit;
+      expect(new Headers(init.headers).get('authorization')).toBe('Bearer isolated-access-token');
+    } finally {
+      fs.rmSync(isolatedHome, { recursive: true, force: true });
+    }
   });
 });
 

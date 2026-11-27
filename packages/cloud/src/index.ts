@@ -283,6 +283,7 @@ export {
   REFRESH_TOKEN_WINDOW_MS,
   DEFAULT_REFRESH_TIMEOUT_MS,
   AUTH_FILE_PATH,
+  authFilePath,
   defaultApiUrl,
   isSupportedProvider,
 } from './types.js';

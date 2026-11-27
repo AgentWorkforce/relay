@@ -12,6 +12,7 @@ import { resolveActiveWorkspaceKey } from './workspace-store.js';
 
 type WorkspaceClientOptions = {
   apiUrl?: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 type WorkspaceTokenIssueOptions = WorkspaceClientOptions & {
@@ -224,12 +225,17 @@ async function tryPostJson(
   body: Record<string, unknown>,
   options: WorkspaceClientOptions
 ): Promise<{ response: Response; payload: unknown }> {
-  const apiUrl = options.apiUrl || defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
-  const { response } = await authorizedApiFetch(auth, endpoint, {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  const apiUrl = options.apiUrl || defaultApiUrl(options.env);
+  const auth = await ensureAuthenticated(apiUrl, { env: options.env });
+  const { response } = await authorizedApiFetch(
+    auth,
+    endpoint,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+    { env: options.env }
+  );
 
   return {
     response,
@@ -241,10 +247,11 @@ async function tryGetJson(
   endpoint: string,
   options: WorkspaceClientOptions & { refreshTimeoutMs?: number; interactive?: boolean }
 ): Promise<{ response: Response; payload: unknown; apiUrl: string }> {
-  const apiUrl = options.apiUrl || defaultApiUrl();
+  const apiUrl = options.apiUrl || defaultApiUrl(options.env);
   const auth = await ensureAuthenticated(apiUrl, {
     interactive: options.interactive,
     refreshTimeoutMs: options.refreshTimeoutMs,
+    env: options.env,
   });
   const { response } = await authorizedApiFetch(
     auth,
@@ -255,6 +262,7 @@ async function tryGetJson(
     {
       interactive: options.interactive,
       refreshTimeoutMs: options.refreshTimeoutMs,
+      env: options.env,
     }
   );
 
@@ -428,6 +436,7 @@ export async function resolveActiveWorkspace(
       apiUrl: options.apiUrl,
       interactive: options.interactive ?? false,
       refreshTimeoutMs: options.refreshTimeoutMs,
+      env: options.env,
     });
 
     if (response.status === 404 || response.status === 405) {

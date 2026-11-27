@@ -23,6 +23,10 @@ const cloudMocks = vi.hoisted(() => ({
 
 vi.mock('@agent-relay/cloud', async (importOriginal) => ({
   AUTH_FILE_PATH: '/tmp/cloud-auth.json',
+  authFilePath: (env: NodeJS.ProcessEnv = process.env) =>
+    env.AGENT_RELAY_HOME?.trim()
+      ? path.join(env.AGENT_RELAY_HOME.trim(), 'cloud-auth.json')
+      : '/tmp/cloud-auth.json',
   REFRESH_WINDOW_MS: 5 * 60_000,
   authorizedApiFetch: vi.fn(),
   cancelWorkflow: vi.fn(),
@@ -1785,6 +1789,46 @@ describe('registerCloudCommands', () => {
     const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
     expect(output).toContain('Organization: (none)');
     expect(output).toContain('Workspace: (none)');
+  });
+
+  it('cloud session and whoami report the AGENT_RELAY_HOME token file path', async () => {
+    const devHome = path.join(os.tmpdir(), 'relay-dev-session-home');
+    vi.stubEnv('AGENT_RELAY_HOME', devHome);
+    try {
+      const auth = {
+        apiUrl: 'https://dev.cloud.test',
+        accessToken: 'access-secret',
+        refreshToken: 'refresh-secret',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      };
+      vi.mocked(ensureCloudSession).mockResolvedValueOnce({ auth, client: {} as never });
+      const sessionHarness = createHarness();
+      await sessionHarness.program.parseAsync(['node', 'agent-relay', 'cloud', 'session']);
+      expect(vi.mocked(sessionHarness.deps.log).mock.calls.flat().join('\n')).toContain(
+        `Token file: ${path.join(devHome, 'cloud-auth.json')}`
+      );
+
+      vi.mocked(ensureAuthenticated).mockResolvedValueOnce(auth as never);
+      vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+        response: jsonResponse({
+          authenticated: true,
+          source: 'session',
+          subjectType: 'user',
+          scopes: [],
+          user: { id: 'u1', email: 'a@b.test', name: 'A', avatarUrl: null },
+          currentOrganization: null,
+          currentWorkspace: null,
+        }),
+        auth,
+      } as never);
+      const whoamiHarness = createHarness();
+      await whoamiHarness.program.parseAsync(['node', 'agent-relay', 'cloud', 'whoami']);
+      expect(vi.mocked(whoamiHarness.deps.log).mock.calls.flat().join('\n')).toContain(
+        `Token file: ${path.join(devHome, 'cloud-auth.json')}`
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('cloud workspaces lists every workspace with its ID', async () => {

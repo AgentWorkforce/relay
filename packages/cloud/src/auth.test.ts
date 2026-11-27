@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 
 const fsMocks = vi.hoisted(() => ({
   readFile: vi.fn(),
@@ -37,7 +38,13 @@ import {
   toCloudIdentity,
   writeStoredAuth,
 } from './auth.js';
-import { AUTH_FILE_PATH, CloudAuthError, type StoredAuth, type WhoAmIResponse } from './types.js';
+import {
+  AUTH_FILE_PATH,
+  authFilePath,
+  CloudAuthError,
+  type StoredAuth,
+  type WhoAmIResponse,
+} from './types.js';
 
 const AUTH_LOCK_PATH = `${AUTH_FILE_PATH}.lock`;
 
@@ -111,9 +118,9 @@ beforeEach(() => {
 
 describe('writeStoredAuth', () => {
   it('atomically writes auth through a pid-scoped sibling temp file', async () => {
-    await writeStoredAuth(FILE_AUTH);
+    await writeStoredAuth(FILE_AUTH, {});
 
-    expect(fsMocks.mkdir).toHaveBeenCalledWith(expect.stringContaining('.agentworkforce/relay'), {
+    expect(fsMocks.mkdir).toHaveBeenCalledWith(path.dirname(AUTH_FILE_PATH), {
       recursive: true,
       mode: 0o700,
     });
@@ -695,7 +702,8 @@ describe('ensureAuthenticated', () => {
     expect(JSON.parse(String((refreshCall?.[1] as RequestInit).body))).toEqual({
       refreshToken: 'stored-refresh',
     });
-    expect(fsMocks.mkdir).toHaveBeenCalledWith(AUTH_LOCK_PATH, { mode: 0o700 });
+    const activeLockPath = `${authFilePath()}.lock`;
+    expect(fsMocks.mkdir).toHaveBeenCalledWith(activeLockPath, { mode: 0o700 });
   });
 });
 
@@ -876,17 +884,19 @@ describe('refreshStoredAuth', () => {
       refreshToken: 'fresh-refresh',
       accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
     };
+    const activeAuthFilePath = authFilePath();
+    const activeLockPath = `${activeAuthFilePath}.lock`;
     let canonicalAuth = staleAuth;
     let lockHeld = false;
 
     fsMocks.readFile.mockImplementation(async (file: string) => {
-      if (file === AUTH_FILE_PATH) {
+      if (file === activeAuthFilePath) {
         return JSON.stringify(canonicalAuth);
       }
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     });
     fsMocks.mkdir.mockImplementation(async (file: string) => {
-      if (file === AUTH_LOCK_PATH) {
+      if (file === activeLockPath) {
         if (lockHeld) {
           throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
         }
@@ -895,18 +905,18 @@ describe('refreshStoredAuth', () => {
       return undefined;
     });
     fsMocks.stat.mockImplementation(async (file: string) => {
-      if (file === AUTH_LOCK_PATH && lockHeld) {
+      if (file === activeLockPath && lockHeld) {
         return { mtimeMs: Date.now() };
       }
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     });
     fsMocks.rename.mockImplementation(async (_temporaryPath: string, file: string) => {
-      if (file === AUTH_FILE_PATH) {
+      if (file === activeAuthFilePath) {
         canonicalAuth = freshAuth;
       }
     });
     fsMocks.rm.mockImplementation(async (file: string) => {
-      if (file === AUTH_LOCK_PATH) {
+      if (file === activeLockPath) {
         lockHeld = false;
       }
       return undefined;
@@ -953,8 +963,9 @@ describe('refreshStoredAuth', () => {
 
     await expect(refreshStoredAuth(auth)).rejects.toThrow('socket closed');
 
-    expect(fsMocks.mkdir).toHaveBeenCalledWith(AUTH_LOCK_PATH, { mode: 0o700 });
-    expect(fsMocks.rm).toHaveBeenCalledWith(AUTH_LOCK_PATH, { recursive: true, force: true });
+    const activeLockPath = `${authFilePath()}.lock`;
+    expect(fsMocks.mkdir).toHaveBeenCalledWith(activeLockPath, { mode: 0o700 });
+    expect(fsMocks.rm).toHaveBeenCalledWith(activeLockPath, { recursive: true, force: true });
   });
 });
 
@@ -1553,9 +1564,136 @@ describe('cloud identity capture', () => {
   });
 
   it('clearing auth also clears the cached identity', async () => {
-    await clearStoredAuth();
+    await clearStoredAuth({});
 
     expect(fsMocks.rm).toHaveBeenCalledWith(AUTH_FILE_PATH, { force: true });
     expect(fsMocks.rm).toHaveBeenCalledWith(expect.stringContaining('cloud-identity.json'), { force: true });
+  });
+});
+
+describe('authFilePath / AGENT_RELAY_HOME isolation', () => {
+  it('resolves cloud-auth.json under AGENT_RELAY_HOME when set and falls back otherwise', () => {
+    expect(authFilePath({})).toBe(AUTH_FILE_PATH);
+    expect(authFilePath({ AGENT_RELAY_HOME: '   ' })).toBe(AUTH_FILE_PATH);
+    expect(authFilePath({ AGENT_RELAY_HOME: '/tmp/relay-dev' })).toBe(
+      path.join('/tmp/relay-dev', 'cloud-auth.json')
+    );
+  });
+
+  it('keeps write, read, refresh, and clear isolated per AGENT_RELAY_HOME', async () => {
+    const devEnv: NodeJS.ProcessEnv = { AGENT_RELAY_HOME: '/tmp/relay-dev-home' };
+    const prodEnv: NodeJS.ProcessEnv = { AGENT_RELAY_HOME: '/tmp/relay-prod-home' };
+    const devPath = authFilePath(devEnv);
+    const prodPath = authFilePath(prodEnv);
+    const devLock = `${devPath}.lock`;
+
+    const files = new Map<string, string>();
+    fsMocks.readFile.mockImplementation(async (file: string) => {
+      const value = files.get(file);
+      if (value === undefined) {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }
+      return value;
+    });
+    fsMocks.writeFile.mockImplementation(async (file: string, body: string) => {
+      files.set(file, body);
+    });
+    fsMocks.rename.mockImplementation(async (src: string, dest: string) => {
+      const body = files.get(src);
+      if (body !== undefined) {
+        files.set(dest, body);
+        files.delete(src);
+      }
+    });
+    fsMocks.rm.mockImplementation(async (file: string) => {
+      files.delete(file);
+    });
+
+    const devAuth: StoredAuth = {
+      apiUrl: 'https://dev.agentrelay.com/cloud',
+      accessToken: 'dev-access-stale',
+      refreshToken: 'dev-refresh-1',
+      accessTokenExpiresAt: '2000-01-01T00:00:00.000Z',
+    };
+    const prodAuth: StoredAuth = {
+      apiUrl: 'https://agentrelay.com/cloud',
+      accessToken: 'prod-access',
+      refreshToken: 'prod-refresh',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+
+    await writeStoredAuth(devAuth, devEnv);
+    await writeStoredAuth(prodAuth, prodEnv);
+
+    expect(await readStoredAuth(devEnv)).toEqual(devAuth);
+    expect(await readStoredAuth(prodEnv)).toEqual(prodAuth);
+    expect(files.has(AUTH_FILE_PATH)).toBe(false);
+
+    const refreshedDev: StoredAuth = {
+      apiUrl: devAuth.apiUrl,
+      accessToken: 'dev-access-fresh',
+      refreshToken: 'dev-refresh-2',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) => {
+        if (String(input).includes('/api/v1/auth/token/refresh')) {
+          return new Response(JSON.stringify(refreshedDev), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      })
+    );
+
+    const session = await ensureCloudSession({ env: devEnv, interactive: false });
+    expect(session.auth).toEqual(refreshedDev);
+    expect(fsMocks.mkdir).toHaveBeenCalledWith(devLock, { mode: 0o700 });
+    expect(fsMocks.mkdir).not.toHaveBeenCalledWith(AUTH_LOCK_PATH, { mode: 0o700 });
+    expect(await readStoredAuth(devEnv)).toEqual(refreshedDev);
+    expect(await readStoredAuth(prodEnv)).toEqual(prodAuth);
+
+    // Ensure CloudApiClient's refreshAuth callback and authorizedApiFetch both stay in devEnv.
+    const nextRefreshedDev: StoredAuth = {
+      ...refreshedDev,
+      accessToken: 'dev-access-3',
+      refreshToken: 'dev-refresh-3',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/api/v1/auth/token/refresh')) {
+          return new Response(JSON.stringify(nextRefreshedDev), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        const authHeader = new Headers(init?.headers).get('authorization');
+        if (authHeader === 'Bearer dev-access-fresh') {
+          return new Response('{}', { status: 401 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      })
+    );
+
+    const fetched = await authorizedApiFetch(
+      refreshedDev,
+      '/api/v1/workflows',
+      { method: 'GET' },
+      {
+        env: devEnv,
+        interactive: false,
+      }
+    );
+    expect(fetched.auth).toEqual(nextRefreshedDev);
+    expect(await readStoredAuth(devEnv)).toEqual(nextRefreshedDev);
+    expect(await readStoredAuth(prodEnv)).toEqual(prodAuth);
+
+    await clearStoredAuth(devEnv);
+    expect(await readStoredAuth(devEnv)).toBeNull();
+    expect(await readStoredAuth(prodEnv)).toEqual(prodAuth);
   });
 });
