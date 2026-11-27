@@ -158,6 +158,11 @@ impl CodexRouter {
                 .release_probe(message_id, claim)
                 .map_err(|_| InjectOutcome::Waiting(CLAIM_UNRECORDED.into()))?;
         }
+        if let Some(turns) = self.turns() {
+            turns
+                .retry_probe_release(message_id)
+                .map_err(|_| InjectOutcome::Waiting(CLAIM_UNRECORDED.into()))?;
+        }
         // A successful check also forgets superseded tokens: their guarded
         // release leaves the newer route's claim untouched.
         pending.remove(message_id);

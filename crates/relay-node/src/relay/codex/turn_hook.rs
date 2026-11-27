@@ -108,6 +108,7 @@ pub enum Taken {
 /// One persisted external probe. Only a newly acquired claim can be
 /// released after a definitive no-handoff answer, and any later claimant
 /// invalidates this token.
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ProbeClaim {
     order: u64,
     releasable: bool,
@@ -123,6 +124,8 @@ pub struct TurnInbox {
     permanent_claims: bool,
     offers: Mutex<HashMap<String, Offer>>,
     now_ms: Box<dyn Fn() -> i64 + Send + Sync>,
+    #[cfg(test)]
+    fail_journal_writes: std::sync::atomic::AtomicBool,
 }
 
 impl Default for TurnInbox {
@@ -132,6 +135,8 @@ impl Default for TurnInbox {
             permanent_claims: false,
             offers: Mutex::default(),
             now_ms: Box::new(crate::relay::state::now_ms),
+            #[cfg(test)]
+            fail_journal_writes: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -157,6 +162,12 @@ impl TurnInbox {
     pub(crate) fn with_clock(mut self, now_ms: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
         self.now_ms = Box::new(now_ms);
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_journal_writes(&self, fail: bool) {
+        self.fail_journal_writes
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether claims are kept on disk at all: without a record nothing is
@@ -218,6 +229,15 @@ impl TurnInbox {
         });
         let (result, changed) = change(&mut journal, now);
         if changed || journal.claims.len() != before {
+            #[cfg(test)]
+            if self
+                .fail_journal_writes
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(std::io::Error::other(
+                    "injected claim journal write failure",
+                ));
+            }
             let bytes = serde_json::to_vec(&journal).map_err(std::io::Error::other)?;
             write(path, &bytes)?;
         }
@@ -342,6 +362,72 @@ impl TurnInbox {
         message_id: &str,
         probe: &ProbeClaim,
     ) -> std::io::Result<bool> {
+        if !probe.releasable {
+            return Ok(false);
+        }
+        // Record the definitive no-handoff result before changing the claim.
+        // This separate, locked receipt survives a failed journal write and
+        // lets a new router finish the exact same guarded release.
+        self.edit_releases(|releases| {
+            let newer = releases
+                .get(message_id)
+                .is_some_and(|saved| saved.order >= probe.order);
+            if !newer {
+                releases.insert(message_id.to_owned(), probe.clone());
+            }
+            (Ok(()), !newer)
+        })?;
+        self.retry_probe_release(message_id)
+    }
+
+    pub(crate) fn retry_probe_release(&self, message_id: &str) -> std::io::Result<bool> {
+        self.edit_releases(|releases| {
+            let Some(probe) = releases.get(message_id) else {
+                return (Ok(false), false);
+            };
+            match self.release_probe_claim(message_id, probe) {
+                Ok(released) => {
+                    releases.remove(message_id);
+                    (Ok(released), true)
+                }
+                Err(error) => (Err(error), false),
+            }
+        })
+    }
+
+    /// The receipt file has its own lock. Always take it before the claim
+    /// journal's lock; journal-only operations never acquire this lock.
+    fn edit_releases<R>(
+        &self,
+        change: impl FnOnce(&mut BTreeMap<String, ProbeClaim>) -> (std::io::Result<R>, bool),
+    ) -> std::io::Result<R> {
+        let record = self
+            .path
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("no Codex hook record"))?;
+        let path = record.with_extension("releases.json");
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(record.with_extension("releases.lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        let mut releases = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) => return Err(error),
+        };
+        let (result, changed) = change(&mut releases);
+        if changed {
+            write(
+                &path,
+                &serde_json::to_vec(&releases).map_err(std::io::Error::other)?,
+            )?;
+        }
+        result
+    }
+
+    fn release_probe_claim(&self, message_id: &str, probe: &ProbeClaim) -> std::io::Result<bool> {
         if !probe.releasable {
             return Ok(false);
         }

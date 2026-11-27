@@ -35,6 +35,53 @@ fn context(answer: &serde_json::Value) -> &str {
 }
 
 #[test]
+fn a_failed_release_is_recovered_from_disk_after_a_router_restart() {
+    for permanent in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(turn_hook::RECORD);
+        let fake = Fake::new();
+        fake.live.store(true, Ordering::SeqCst);
+        let open = || {
+            let turns = TurnInbox::open(path.clone());
+            let turns = if permanent {
+                turns.retain_claims()
+            } else {
+                turns
+            };
+            let inbox = Arc::new(StopHookInbox::with_turns(turns));
+            inbox.set_ready(true);
+            let router = CodexRouter::new(fake.clone()).with_stop_hook(inbox.clone());
+            (router, inbox)
+        };
+        {
+            let (router, inbox) = open();
+            let claim = router.claim_host_probe("restart").unwrap();
+            inbox.turns().fail_journal_writes(true);
+            assert!(router.release_host_probe("restart", claim).is_err());
+            assert_eq!(inbox.turns().claimed("restart"), Claimed::Elsewhere);
+        }
+        // Both the router's pending map and its inbox have been dropped.
+        let (router, inbox) = open();
+        assert!(router.pending_probe_releases.lock().unwrap().is_empty());
+        fake.busy.store(true, Ordering::SeqCst);
+        assert_eq!(
+            router.inject_with(THREAD, "restart", TEXT, &|| None),
+            InjectOutcome::WaitingForTurn(turn_hook::WAITING.into())
+        );
+        assert!(
+            context(&inbox.turns().answer(THREAD, HookEvent::PostToolUse))
+                .ends_with("Can you check CI?")
+        );
+        assert_eq!(
+            inbox.turns().answer(THREAD, HookEvent::PostToolUse),
+            serde_json::json!({})
+        );
+        assert_eq!(count(&fake.app_sends), 0);
+        assert_eq!(count(&fake.window_sends), 0);
+    }
+}
+
+#[test]
 fn a_failed_no_handoff_release_recovers_before_the_next_turn() {
     for permanent in [false, true] {
         let dir = tempfile::tempdir().unwrap();
