@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent-relay-node`: on Windows, updating Agent Relay no longer makes Codex ask you to review its hooks again. Each release installs in a folder of its own, and the Codex hook in `~/.codex/hooks.json` named that release's probe, so every update changed the hook's command and Codex dropped its trust: it reported "4 hooks are new or changed", and until you trusted them every turn ran a failing hook (relay#2239). The hook now runs a copy of the probe kept at one path in Agent Relay's own data folder (`bin\agent-relay-probe.exe`), refreshed at each start, so the trust you gave once stays. The copy is used only as a regular file of exactly the running probe's contents in that private folder; anything else leaves the hook naming the installed probe as before. macOS and Linux are unchanged.
+
 ## [18.17.0] - 2026-11-27
 
 ### Added

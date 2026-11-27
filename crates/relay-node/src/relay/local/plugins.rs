@@ -262,11 +262,19 @@ pub fn plugins_with_options(
         &config.app_data_dir,
         &build,
     );
+    // Codex trusts the hook by its command, so on Windows, where each release
+    // installs in a folder of its own, the hook runs a copy kept at one path
+    // (`hook_program`) and an update does not ask for its review again.
+    let hook_program = if development {
+        probe.clone()
+    } else {
+        crate::relay::hook_program::stable(&probe, &config.app_data_dir)
+    };
     let stop_hook_settings = Arc::new(
         codex::stop_hook::CodexStopHookSettings::new(
             local.codex.home.clone(),
             codex::stop_hook::CodexStopHookSettings::command_for_build(
-                &probe,
+                &hook_program,
                 &build,
                 &relay_send_socket,
             ),
