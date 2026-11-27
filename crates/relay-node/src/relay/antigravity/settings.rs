@@ -47,6 +47,29 @@ impl AntigravitySettings {
         self.config.enabled()
     }
 
+    fn hooks_lock(&self) -> Result<std::fs::File, String> {
+        let dir = self.config.home.join(".agentworkforce/desktop");
+        crate::platform::fs::create_private_dir_all(&dir)
+            .map_err(|_| "Could not open Antigravity hooks lock directory.")?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(false);
+        let lock = crate::platform::fs::no_follow(crate::platform::fs::private(&mut options))
+            .open(dir.join(".antigravity-hooks.lock"))
+            .map_err(|_| "Could not open Antigravity hooks lock.")?;
+        let metadata = lock
+            .metadata()
+            .map_err(|_| "Could not inspect Antigravity hooks lock.")?;
+        if !metadata.is_file()
+            || !crate::platform::fs::owned_by_current_user(&metadata)
+            || !crate::platform::fs::private_to_owner(&metadata, 0o077)
+        {
+            return Err("Antigravity hooks lock is not private.".into());
+        }
+        fs2::FileExt::lock_exclusive(&lock)
+            .map_err(|_| "Could not lock Antigravity hooks.".to_string())?;
+        Ok(lock)
+    }
+
     /// Bring an already-installed managed entry up to date with the current
     /// helper path and event timeouts without re-enabling after an explicit Off.
     pub fn refresh(&self) -> Result<(), String> {
@@ -57,6 +80,7 @@ impl AntigravitySettings {
             .lock
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        let _file_lock = self.hooks_lock()?;
         let key = hook_key(&self.config);
         let Some(Value::Object(mut root)) =
             document(&self.config).map_err(|_| "Could not read Antigravity hooks.")?
@@ -88,6 +112,7 @@ impl AntigravitySettings {
             .lock
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        let _file_lock = self.hooks_lock()?;
         let path = self.config.hooks_file();
         let mut root = match document(&self.config)
             .map_err(|_| "Could not read Antigravity hooks.")?

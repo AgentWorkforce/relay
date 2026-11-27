@@ -42,12 +42,19 @@ pub fn identify(
     }
     let child = direct_child?;
     let command = shell_command(table, child.pid)?;
-    let matches: Vec<String> = held
-        .iter()
-        .filter(|sid| transcript_runs_command(config, sid, &command))
-        .cloned()
-        .collect();
-    if matches.len() != 1 {
+    let mut matches = Vec::new();
+    let mut uncertain = false;
+    for sid in &held {
+        match active_turn_commands(config, sid) {
+            Some(commands) => {
+                if commands.iter().any(|c| c == &command) {
+                    matches.push(sid.clone());
+                }
+            }
+            None => uncertain = true,
+        }
+    }
+    if uncertain || matches.len() != 1 {
         return None;
     }
     let chosen = matches.into_iter().next()?;
@@ -81,45 +88,71 @@ fn shell_command(table: &dyn ProcessTable, pid: i32) -> Option<String> {
     None
 }
 
-pub(super) fn transcript_path(config: &AntigravityConfig, sid: &str) -> Option<PathBuf> {
-    if !is_uuid(sid) {
-        return None;
-    }
-    let logs = config.brain().join(sid).join(".system_generated/logs");
-    let full = logs.join("transcript_full.jsonl");
-    if full.is_file() {
-        return Some(full);
-    }
-    let compact = logs.join("transcript.jsonl");
-    compact.is_file().then_some(compact)
+enum TranscriptFile {
+    Absent,
+    Readable(PathBuf),
+    Unreadable,
 }
 
-fn active_turn_commands(config: &AntigravityConfig, sid: &str) -> Vec<String> {
-    let Some(path) = transcript_path(config, sid) else {
-        return Vec::new();
+fn transcript_file(config: &AntigravityConfig, sid: &str) -> TranscriptFile {
+    if !is_uuid(sid) {
+        return TranscriptFile::Unreadable;
+    }
+    let logs = config.brain().join(sid).join(".system_generated/logs");
+    for name in ["transcript_full.jsonl", "transcript.jsonl"] {
+        let path = logs.join(name);
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => return TranscriptFile::Readable(path),
+            Ok(_) => return TranscriptFile::Unreadable,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return TranscriptFile::Unreadable,
+        }
+    }
+    TranscriptFile::Absent
+}
+
+pub(super) fn transcript_path(config: &AntigravityConfig, sid: &str) -> Option<PathBuf> {
+    match transcript_file(config, sid) {
+        TranscriptFile::Readable(path) => Some(path),
+        TranscriptFile::Absent | TranscriptFile::Unreadable => None,
+    }
+}
+
+/// Returns `Some(rows)` for the active turn (empty when no transcript file
+/// exists yet), or `None` when the transcript exists but is unreadable or
+/// truncated past `TAIL_BYTES` without a visible turn boundary.
+fn active_turn_rows(config: &AntigravityConfig, sid: &str) -> Option<Vec<Value>> {
+    let path = match transcript_file(config, sid) {
+        TranscriptFile::Absent => return Some(Vec::new()),
+        TranscriptFile::Unreadable => return None,
+        TranscriptFile::Readable(path) => path,
     };
-    let Some(tail) = read_tail(&path, TAIL_BYTES) else {
-        return Vec::new();
-    };
-    // Inspect only the current turn (steps after the most recent USER_INPUT).
+    let (tail, truncated) = read_tail_checked(&path, TAIL_BYTES)?;
     let mut rows = Vec::new();
     for line in tail.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(row) = serde_json::from_str::<Value>(line) {
-            rows.push(row);
-        }
+        let Ok(row) = serde_json::from_str::<Value>(line) else {
+            return None;
+        };
+        rows.push(row);
     }
-    let turn_start = rows
-        .iter()
-        .rposition(|row| {
-            row["source"].as_str() == Some("USER_EXPLICIT")
-                && row["type"].as_str() == Some("USER_INPUT")
-        })
-        .map_or(0, |idx| idx + 1);
+    let user_idx = rows.iter().rposition(|row| {
+        row["source"].as_str() == Some("USER_EXPLICIT")
+            && row["type"].as_str() == Some("USER_INPUT")
+    });
+    if truncated && user_idx.is_none() {
+        return None;
+    }
+    let turn_start = user_idx.map_or(0, |idx| idx + 1);
+    Some(rows.split_off(turn_start))
+}
+
+fn active_turn_commands(config: &AntigravityConfig, sid: &str) -> Option<Vec<String>> {
+    let rows = active_turn_rows(config, sid)?;
     let mut commands = Vec::new();
-    for row in &rows[turn_start..] {
+    for row in &rows {
         if row["type"].as_str() != Some("PLANNER_RESPONSE") {
             continue;
         }
@@ -133,25 +166,111 @@ fn active_turn_commands(config: &AntigravityConfig, sid: &str) -> Vec<String> {
             }
         }
     }
-    commands
+    Some(commands)
 }
 
-fn transcript_runs_command(config: &AntigravityConfig, sid: &str, command: &str) -> bool {
-    active_turn_commands(config, sid)
+/// Whether `sid` currently has an in-flight `run_command` tool call that
+/// actually invokes the managed hook helper for `event` (not a completed
+/// command and not harmless text like `rg antigravity-hook`).
+pub(super) fn inflight_hook_invocation(
+    config: &AntigravityConfig,
+    sid: &str,
+    helper: &Path,
+    event: &str,
+) -> bool {
+    let Some(rows) = active_turn_rows(config, sid) else {
+        return false;
+    };
+    let Some(last_planner_idx) = rows
         .iter()
-        .any(|c| c == command)
-}
-
-/// Whether `sid`'s current turn issued a `run_command` mentioning
-/// `antigravity-hook` — used to block a sibling conversation's tool command
-/// from spoofing a lifecycle hook for another held conversation.
-pub(super) fn active_turn_runs_hook(config: &AntigravityConfig, sid: &str) -> bool {
-    active_turn_commands(config, sid)
+        .rposition(|row| row["type"].as_str() == Some("PLANNER_RESPONSE"))
+    else {
+        return false;
+    };
+    let Some(calls) = rows[last_planner_idx]["tool_calls"].as_array() else {
+        return false;
+    };
+    let run_commands: Vec<&str> = calls
         .iter()
-        .any(|c| c.contains("antigravity-hook"))
+        .filter(|call| call["name"].as_str() == Some("run_command"))
+        .filter_map(|call| call["args"]["CommandLine"].as_str())
+        .collect();
+    if run_commands.is_empty() {
+        return false;
+    }
+    let done_after = rows[last_planner_idx + 1..]
+        .iter()
+        .filter(|row| {
+            matches!(row["type"].as_str(), Some("RUN_COMMAND" | "TOOL_RESULT"))
+                && row["status"].as_str() == Some("DONE")
+        })
+        .count();
+    if done_after >= run_commands.len() {
+        return false;
+    }
+    let helper_name = helper
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    run_commands
+        .into_iter()
+        .any(|cmd| command_invokes_hook_helper(cmd, helper_name, event))
 }
 
-pub(super) fn read_tail(path: &Path, limit: u64) -> Option<String> {
+fn command_invokes_hook_helper(cmd: &str, helper_name: &str, event: &str) -> bool {
+    if helper_name.is_empty() || !cmd.contains("antigravity-hook") {
+        return false;
+    }
+    for segment in cmd.split([';', '|', '&', '\n']) {
+        let Ok(words) = shell_words::split(segment) else {
+            continue;
+        };
+        let mut idx = 0;
+        while idx < words.len() {
+            let word = words[idx].as_str();
+            if word == "exec" || word == "command" || word == "env" {
+                idx += 1;
+                if word == "env" {
+                    while idx < words.len() {
+                        let w = words[idx].as_str();
+                        if w == "-u" && idx + 1 < words.len() {
+                            idx += 2;
+                        } else if w.starts_with('-') || w.contains('=') {
+                            idx += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            if word.contains('=') && !word.starts_with('/') {
+                idx += 1;
+                continue;
+            }
+            break;
+        }
+        let Some(prog) = words.get(idx) else {
+            continue;
+        };
+        let prog_name = Path::new(prog)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        if prog_name != helper_name {
+            continue;
+        }
+        let rest = &words[idx + 1..];
+        if rest.first().map(String::as_str) == Some("antigravity-hook")
+            && rest.windows(2).any(|w| w[0] == "--event" && w[1] == event)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn read_tail_checked(path: &Path, limit: u64) -> Option<(String, bool)> {
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
     let offset = len.saturating_sub(limit);
@@ -168,5 +287,9 @@ pub(super) fn read_tail(path: &Path, limit: u64) -> Option<String> {
     } else {
         &buf[..]
     };
-    Some(String::from_utf8_lossy(slice).into_owned())
+    Some((String::from_utf8_lossy(slice).into_owned(), offset > 0))
+}
+
+pub(super) fn read_tail(path: &Path, limit: u64) -> Option<String> {
+    read_tail_checked(path, limit).map(|(text, _)| text)
 }

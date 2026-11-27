@@ -41,8 +41,10 @@ fn read_record(config: &AntigravityConfig, sid: &str) -> io::Result<Option<Recor
 
 fn read_summaries(config: &AntigravityConfig) -> Option<HashMap<String, Summary>> {
     let db = config.summaries_db();
-    if !db.is_file() {
-        return Some(HashMap::new());
+    match std::fs::metadata(&db) {
+        Ok(meta) if meta.is_file() => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Some(HashMap::new()),
+        Ok(_) | Err(_) => return None,
     }
     let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     let _ = conn.busy_timeout(Duration::from_millis(500));
@@ -76,13 +78,16 @@ fn read_summaries(config: &AntigravityConfig) -> Option<HashMap<String, Summary>
     Some(out)
 }
 
-/// Returns `None` if `conversation_summaries.db` exists on disk but could not
-/// be read (fail closed so subagents are not exposed), `Some(None)` if no row
-/// exists for `sid`, or `Some(Some(summary))` if found.
+/// Returns `None` if `conversation_summaries.db` exists on disk (or its
+/// metadata cannot be inspected) and cannot be read (fail closed so subagents
+/// are not exposed), `Some(None)` if the DB is absent or no row exists for
+/// `sid`, or `Some(Some(summary))` if found.
 fn read_summary(config: &AntigravityConfig, sid: &str) -> Option<Option<Summary>> {
     let db = config.summaries_db();
-    if !db.is_file() {
-        return Some(None);
+    match std::fs::metadata(&db) {
+        Ok(meta) if meta.is_file() => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Some(None),
+        Ok(_) | Err(_) => return None,
     }
     let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     let _ = conn.busy_timeout(Duration::from_millis(500));
@@ -233,6 +238,22 @@ pub fn discover(
     Some(sessions)
 }
 
+fn all_held_sids(config: &AntigravityConfig, table: &dyn ProcessTable, uid: u32) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut sids = Vec::new();
+    for pid in table.all_pids() {
+        let Some(runtime) = proof::runtime(table, pid, uid) else {
+            continue;
+        };
+        for sid in proof::held(config, table, runtime.pid, uid) {
+            if seen.insert(sid.clone()) {
+                sids.push(sid);
+            }
+        }
+    }
+    sids
+}
+
 /// Look up one live Antigravity conversation by UUID without scanning every
 /// process when its cached hook record already names its live holder.
 pub fn session(
@@ -250,7 +271,8 @@ pub fn session(
             if runtime.start == rec.start {
                 let held = proof::held(config, table, runtime.pid, uid);
                 if held.iter().any(|id| id == sid) {
-                    if subagent_ids(config, &held).contains(sid) {
+                    let all_sids = all_held_sids(config, table, uid);
+                    if subagent_ids(config, &all_sids).contains(sid) {
                         return None;
                     }
                     let summary = read_summary(config, sid)?;
@@ -262,26 +284,34 @@ pub fn session(
             }
         }
     }
+    let mut matched_runtime = None;
+    let mut all_sids = Vec::new();
+    let mut seen = HashSet::new();
     for pid in table.all_pids() {
         let Some(runtime) = proof::runtime(table, pid, uid) else {
             continue;
         };
-        let held = proof::held(config, table, runtime.pid, uid);
-        if held.iter().any(|id| id == sid) {
-            if subagent_ids(config, &held).contains(sid) {
-                return None;
+        for held_sid in proof::held(config, table, runtime.pid, uid) {
+            if held_sid == sid && matched_runtime.is_none() {
+                matched_runtime = Some(runtime);
             }
-            let summary = read_summary(config, sid)?;
-            if summary.as_ref().is_some_and(|s| s.is_subagent) {
-                return None;
+            if seen.insert(held_sid.clone()) {
+                all_sids.push(held_sid);
             }
-            let fresh = record
-                .as_ref()
-                .filter(|rec| rec.pid == runtime.pid && rec.start == runtime.start);
-            return Some(build_row(sid, summary.as_ref(), fresh));
         }
     }
-    None
+    let runtime = matched_runtime?;
+    if subagent_ids(config, &all_sids).contains(sid) {
+        return None;
+    }
+    let summary = read_summary(config, sid)?;
+    if summary.as_ref().is_some_and(|s| s.is_subagent) {
+        return None;
+    }
+    let fresh = record
+        .as_ref()
+        .filter(|rec| rec.pid == runtime.pid && rec.start == runtime.start);
+    Some(build_row(sid, summary.as_ref(), fresh))
 }
 
 fn record_lock(config: &AntigravityConfig, sid: &str) -> io::Result<std::fs::File> {
@@ -308,7 +338,7 @@ fn observe(
     payload: &Value,
 ) -> Option<()> {
     let _lock = record_lock(config, sid).ok()?;
-    let old = read_record(config, sid).ok().flatten();
+    let old = fresh_record(config, sid, runtime);
     let cwd = payload["cwd"]
         .as_str()
         .filter(|s| !s.is_empty())
@@ -375,12 +405,13 @@ pub fn hook_answer(
     if !held.iter().any(|id| id == sid) {
         return None;
     }
-    if held.len() > 1
-        && held
-            .iter()
-            .any(|other| super::caller::active_turn_runs_hook(config, other))
-    {
-        return None;
+    if held.len() > 1 {
+        let helper = config.helper();
+        if held.iter().any(|other| {
+            other != sid && super::caller::inflight_hook_invocation(config, other, &helper, event)
+        }) {
+            return None;
+        }
     }
     if table.process(pid) != Some(hook) || table.process(runtime.pid) != Some(runtime) {
         return None;

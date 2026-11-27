@@ -453,33 +453,94 @@ fn hook_rejects_shell_parent_tool_env_wrong_cwd_and_sibling_hook_command() {
     table.unreadable_environment.lock().unwrap().insert(155);
     assert!(hook_answer(&config, &table, 501, 155, &payload, &|| true).is_none());
 
-    // 6) Genuine hook succeeds until a sibling conversation's active turn runs antigravity-hook.
+    // 6) Genuine hook succeeds even if a sibling ran `rg antigravity-hook` or completed an earlier command,
+    //    but is rejected while a sibling has an in-flight `run_command` invoking the hook helper.
     table.insert(
         156,
         FakeProcess {
             parent: ls_pid,
             uid: 501,
             start: 41,
-            executable: Some(helper),
+            executable: Some(helper.clone()),
             arguments: args,
             cwd: Some(config.config_dir.clone()),
             ..Default::default()
         },
     );
-    assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_some());
-
     let logs_a = config.brain().join(SID_A).join(".system_generated/logs");
     std::fs::create_dir_all(&logs_a).unwrap();
+    // Harmless search mentioning `antigravity-hook` must NEVER block another conversation's hook.
+    std::fs::write(
+        logs_a.join("transcript_full.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"search"}),
+            json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"rg antigravity-hook ."}}]}),
+        ),
+    )
+    .unwrap();
+    assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_some());
+
+    // An in-flight sibling command invoking the helper for `--event stop` IS blocked.
     std::fs::write(
         logs_a.join("transcript_full.jsonl"),
         format!(
             "{}\n{}\n",
             json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"steal"}),
-            json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"exec /opt/agent-relay-probe antigravity-hook --event stop"}}]}),
+            json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":format!("exec {} antigravity-hook --event stop", helper.display())}}]}),
         ),
     )
     .unwrap();
     assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_none());
+
+    // Once that sibling command has completed (RUN_COMMAND DONE), genuine hooks work again.
+    std::fs::write(
+        logs_a.join("transcript_full.jsonl"),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"steal"}),
+            json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":format!("exec {} antigravity-hook --event stop", helper.display())}}]}),
+            json!({"step_index":2,"source":"SYSTEM","type":"RUN_COMMAND","status":"DONE"}),
+        ),
+    )
+    .unwrap();
+    assert!(hook_answer(&config, &table, 501, 156, &payload, &|| true).is_some());
+}
+
+#[test]
+fn unreadable_sibling_transcript_fails_closed_for_caller_attribution() {
+    let home = tempfile::tempdir().unwrap();
+    let (config, table, ls_pid) = setup_fake_antigravity(home.path(), &[SID_A, SID_B]);
+    let cmd = "agent-relay-probe send --to team";
+    let logs_a = config.brain().join(SID_A).join(".system_generated/logs");
+    let logs_b = config.brain().join(SID_B).join(".system_generated/logs");
+    std::fs::create_dir_all(&logs_a).unwrap();
+    std::fs::create_dir_all(&logs_b).unwrap();
+    std::fs::write(
+        logs_a.join("transcript_full.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"go"}),
+            json!({"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":cmd}}]}),
+        ),
+    )
+    .unwrap();
+    // Corrupt/unparseable transcript for sibling SID_B must cause identify() to fail closed.
+    std::fs::write(logs_b.join("transcript_full.jsonl"), "not-valid-json\n").unwrap();
+    table.insert(
+        102,
+        FakeProcess {
+            parent: ls_pid,
+            uid: 501,
+            start: 30,
+            executable: Some(PathBuf::from("/bin/zsh")),
+            arguments: vec!["zsh".into(), "-c".into(), cmd.into()],
+            ..Default::default()
+        },
+    );
+    let host = table.process(ls_pid).unwrap();
+    let child = table.process(102);
+    assert!(caller::identify(&config, &table, 501, 102, host, child).is_none());
 }
 
 #[test]
