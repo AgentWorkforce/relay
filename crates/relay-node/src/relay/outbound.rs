@@ -69,6 +69,7 @@ mod mobile_handoff_permission;
 mod mobile_handoff_result;
 mod question;
 mod send_files;
+pub(crate) mod send_trace;
 mod session_routes;
 mod settings;
 mod socket_path;
@@ -1197,6 +1198,11 @@ impl Outbound {
             .and_then(Value::as_str)
             .filter(|text| !text.trim().is_empty())
             .ok_or_else(|| OutboundError::new(400, "invalid_text", "The message has no text."))?;
+        match (&channel, &endpoint) {
+            (Some(channel), _) => send_trace::recipient(&format!("#{channel}")),
+            (None, Some(endpoint)) => send_trace::recipient(endpoint.value()),
+            (None, None) => {}
+        }
         let paths = requested_files(request)?;
         let owner_approval = delegation::requested_owner_approval(request)?;
         if owner_approval.is_some() && request.contains_key("reply_to") {
@@ -1283,6 +1289,7 @@ impl Outbound {
         // that cannot be sent leaves no half-sent message and no lost
         // automatic answer behind.
         let confine = (session.directory.clone(), &self.core.config);
+        send_trace::mark(send_trace::Stage::Uploading);
         let attached = upload_files(&registration.base_url, &token, paths, confine).await?;
         let attachments: Vec<String> = attached.iter().map(|a| a.file_id.clone()).collect();
         if let Some(endpoint) = &endpoint {
@@ -1354,6 +1361,7 @@ impl Outbound {
                 }
             }
         };
+        send_trace::mark(send_trace::Stage::Writing);
         let mut first = send(idempotency_key.clone(), token.clone()).await;
         // relaygate refused the gate agent's token (it expired): nothing was
         // sent, so it registers again, once, under the lock held above, and
@@ -1379,17 +1387,13 @@ impl Outbound {
             // are returned to the caller instead of risking a second message.
             Err(error) if idempotency_key.is_none() && retry_unkeyed_after(&error) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                send(
-                    Some(format!(
-                        "probe-send-v1-{}",
-                        crate::relay::store::random_uuid()
-                    )),
-                    token.clone(),
-                )
-                .await
+                let key = format!("probe-send-v1-{}", crate::relay::store::random_uuid());
+                send_trace::retry_key(&key);
+                send(Some(key), token.clone()).await
             }
             result => result,
         };
+        send_trace::mark(send_trace::Stage::Receipt);
         let sent = self.settle(sent, registration, endpoint).await?;
         let mut answer = match (&channel, &endpoint) {
             (Some(channel), _) => json!({

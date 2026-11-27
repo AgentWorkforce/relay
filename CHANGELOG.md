@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay-node`: a send through the session socket (`agent-relay-node send`, and the local `send_relay_message` tools that use it) no longer leaves its caller waiting until its own client gives up. After 45 seconds the send answers `send_timed_out` (504) when nothing was sent, or `send_in_doubt` (504) when writing to Relaycast began but no answer came back, so it may have been sent. A send Relaycast already refused (an unknown recipient, say) still reports that refusal, even if explaining it takes too long. A send repeated with the same `Idempotency-Key` is sent at most once. Every send also writes one line to the core's diagnostic log (`core.log`), so support can trace a send a session says it made. The line has a SHA-256 prefix of its idempotency key (never the key), the message id or failure code, the recipient, the total time, and the time spent accepting, uploading files, writing to Relaycast and reading the answer. Message text is never logged.
 
 ## [18.17.0] - 2026-11-27
 
