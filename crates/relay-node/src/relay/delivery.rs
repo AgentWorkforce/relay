@@ -2006,7 +2006,7 @@ impl Core {
                 .try_lock()
                 .is_err()
         };
-        if registration.reply_with_final_answer == Some(false) || changing() {
+        if !registration.final_answers_on() || changing() {
             return;
         }
         let injector = self.plugins.injector.clone();
@@ -2065,7 +2065,7 @@ impl Core {
             let replying = store
                 .registrations
                 .iter()
-                .any(|r| r.agent_id == reply.agent_id && r.reply_with_final_answer != Some(false));
+                .any(|r| r.agent_id == reply.agent_id && r.final_answers_on());
             let entry = store
                 .replies
                 .iter_mut()

@@ -2273,7 +2273,7 @@ public struct LocalAgent: Codable, Equatable, Hashable, Sendable {
     /// ISO-8601, seconds precision.
     public let registeredAt: String
     /// `true` always answers, `false` never, `null` only when the session
-    /// cannot answer itself.
+    /// cannot answer itself; for Pi and Oh My Pi sessions `null` never.
     public let replyWithFinalAnswer: Bool?
     /// The repository (`owner/name`) the agent's session is in, when
     /// `auto_join_repositories` named it at registration.
@@ -3543,7 +3543,8 @@ public struct Renamed: Codable, Equatable, Hashable, Sendable {
 
 public struct ReplySettingParams: Codable, Equatable, Hashable, Sendable {
     /// `true` always answers, `false` never, `null` only when the session
-    /// cannot answer itself. Required.
+    /// cannot answer itself; for Pi and Oh My Pi sessions `null` never.
+    /// Required.
     public let enabled: Bool?
     public let name: String
 

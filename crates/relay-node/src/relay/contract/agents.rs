@@ -186,7 +186,7 @@ pub struct LocalAgent {
     pub registered_at: String,
     pub added_by_session: bool,
     /// `true` always answers, `false` never, `null` only when the session
-    /// cannot answer itself.
+    /// cannot answer itself; for Pi and Oh My Pi sessions `null` never.
     pub reply_with_final_answer: Option<bool>,
     pub webhook: Option<AgentWebhook>,
     pub integrations: Vec<AgentIntegration>,
@@ -286,7 +286,8 @@ pub struct TestMessageSent {
 pub struct ReplySettingParams {
     pub name: String,
     /// `true` always answers, `false` never, `null` only when the session
-    /// cannot answer itself. Required.
+    /// cannot answer itself; for Pi and Oh My Pi sessions `null` never.
+    /// Required.
     #[serde(deserialize_with = "present")]
     #[schemars(schema_with = "nullable::<bool>", required)]
     pub enabled: Option<bool>,

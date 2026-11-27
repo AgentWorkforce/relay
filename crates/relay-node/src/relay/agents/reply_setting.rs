@@ -4,7 +4,8 @@ use super::*;
 impl Core {
     /// Whether the agent answers automatically with the session's final
     /// answer: `Some(true)` always, `Some(false)` never, `None` only when
-    /// the session cannot reply itself. Turning it off drops pending work.
+    /// the session cannot reply itself (never, for Pi and Oh My Pi:
+    /// `Registration::final_answers_on`). Turning it off drops pending work.
     pub async fn set_reply_setting(
         &self,
         name: &str,

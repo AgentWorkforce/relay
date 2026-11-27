@@ -375,6 +375,18 @@ pub fn owed(agent_id: &str, message_id: &str, requester: &str) -> Reply {
 }
 
 impl Registration {
+    /// Whether this session's automatic final answers may go out at all:
+    /// unless turned off, and for Pi and Oh My Pi only when turned on. Their
+    /// extension records an answer for every finished turn, so two such
+    /// sessions answering each other automatically would wake each other
+    /// without end. The same rule holds for answers queued before it.
+    pub fn final_answers_on(&self) -> bool {
+        match self.reply_with_final_answer {
+            Some(on) => on,
+            None => !matches!(self.target.kind, SessionKind::Pi | SessionKind::Omp),
+        }
+    }
+
     /// Whether this session's final answer to `delivery` goes back on its
     /// own even though it was shown how to reply: when that is turned on,
     /// or for a DM from the agent that spawned it. The spawned session was

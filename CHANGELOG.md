@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Changed
+
+- `agent-relay-node`: **default change for Pi and Oh My Pi.** Their automatic final answers are now off unless turned on for the agent (Reply with final answer, `agents.reply_setting` `enabled: true`); before, they were on by default. Two registered Pi or Oh My Pi sessions no longer wake each other with automatic answers. Answers queued before upgrading follow the new default, so an older exchange does not restart. While a Pi or Oh My Pi session's binding is live, its messages name a reply command, which its tools can run as that session. Other kinds are unchanged.
 
 ### Fixed
 
