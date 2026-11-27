@@ -44,6 +44,9 @@ struct Marks {
     recipient: Option<String>,
     /// The key a retry generated, when the caller gave none.
     retry_key: Option<String>,
+    /// Relaycast's refusal of the write, known before the send went on to
+    /// explain it (`refused`).
+    refused: Option<OutboundError>,
 }
 
 /// A send being traced. Cheap to clone: the clones share their marks.
@@ -83,7 +86,7 @@ impl Trace {
             Ok(outcome) => outcome,
             Err(_) => Err(self.timed_out(deadline)),
         };
-        crate::relay::diagnostics::write(format_args!("{}", self.line(&outcome, Instant::now())));
+        emit(self.line(&outcome, Instant::now()));
         outcome
     }
 
@@ -98,11 +101,15 @@ impl Trace {
             .map_or(Stage::Accepting, |(stage, _)| *stage)
     }
 
-    /// What the caller is told when the send ran out of time: nothing was
-    /// sent if it never began writing to Relaycast; otherwise it may have
-    /// been, and sending it again with the same `Idempotency-Key` sends it
-    /// once.
+    /// What the caller is told when the send ran out of time: Relaycast's
+    /// refusal, when it refused the write and only explaining it took too
+    /// long; nothing was sent if it never began writing to Relaycast;
+    /// otherwise it may have been, and sending it again with the same
+    /// `Idempotency-Key` sends it once.
     fn timed_out(&self, deadline: Duration) -> OutboundError {
+        if let Some(refused) = self.marks().refused.clone() {
+            return refused;
+        }
         let seconds = deadline.as_secs();
         if self.stage() >= Stage::Writing {
             OutboundError::new(
@@ -145,7 +152,7 @@ impl Trace {
         let mut line = format!(
             "[send] idempotency={} to={} {result} total_ms={} {}",
             hashed(self.key.as_deref()),
-            marks.recipient.as_deref().unwrap_or("none"),
+            escaped(marks.recipient.as_deref().unwrap_or("none")),
             millis(self.started, now),
             stages.join(" "),
         );
@@ -154,6 +161,47 @@ impl Trace {
         }
         line
     }
+}
+
+/// How many lines may wait for the writer before new ones are dropped.
+const BACKLOG: usize = 256;
+
+/// Hands `line` to the diagnostic log's writer thread and returns at once:
+/// a send's answer never waits on stderr or `core.log` (a full stderr pipe
+/// blocks a write). Past `BACKLOG` waiting lines, the line is dropped.
+fn emit(line: String) {
+    static WRITER: std::sync::OnceLock<Option<std::sync::mpsc::SyncSender<String>>> =
+        std::sync::OnceLock::new();
+    let writer = WRITER.get_or_init(|| {
+        let (send, receive) = std::sync::mpsc::sync_channel::<String>(BACKLOG);
+        std::thread::Builder::new()
+            .name("send-trace-log".into())
+            .spawn(move || {
+                for line in receive {
+                    crate::relay::diagnostics::write(format_args!("{line}"));
+                }
+            })
+            .ok()
+            .map(|_| send)
+    });
+    if let Some(writer) = writer {
+        let _ = writer.try_send(line);
+    }
+}
+
+/// `value` with each control character written as a `\u{..}` escape, so a
+/// recipient cannot put terminal controls into the log.
+fn escaped(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_unicode().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 fn name(stage: Stage) -> &'static str {
@@ -191,6 +239,13 @@ pub(crate) fn recipient(recipient: &str) {
 /// The send under way was retried with `key`, which it generated.
 pub(crate) fn retry_key(key: &str) {
     let _ = TRACE.try_with(|trace| trace.marks().retry_key = Some(key.to_string()));
+}
+
+/// Relaycast refused the send under way with `error`, before the send went
+/// on to explain it (an unknown recipient's candidates): should the
+/// explanation run out of time, the caller still learns nothing was sent.
+pub(crate) fn refused(error: &OutboundError) {
+    let _ = TRACE.try_with(|trace| trace.marks().refused = Some(error.clone()));
 }
 
 #[cfg(test)]
@@ -259,6 +314,37 @@ mod tests {
         let error = during.timed_out(DEADLINE);
         assert_eq!((error.status, error.code.as_str()), (504, "send_in_doubt"));
         assert!(DEADLINE < crate::relay::cli::SOCKET_TIMEOUT);
+    }
+
+    // #2294 review: Relaycast refused the write, and only explaining the
+    // unknown recipient ran out of time: the caller gets the refusal, not
+    // "it may have been sent".
+    #[tokio::test]
+    async fn a_known_refusal_survives_a_slow_explanation() {
+        let refusal = OutboundError::new(404, "agent_not_found", "No agent named bob.");
+        let outcome = Trace::start(None)
+            .run(Duration::from_millis(20), {
+                let refusal = refusal.clone();
+                async move {
+                    mark(Stage::Writing);
+                    mark(Stage::Receipt);
+                    refused(&refusal);
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                }
+            })
+            .await;
+        assert_eq!(outcome.unwrap_err(), refusal);
+    }
+
+    #[test]
+    fn control_characters_in_the_recipient_are_escaped() {
+        let (trace, started) = trace_at(&[]);
+        trace.marks().recipient = Some("alice\u{1b}[2J".into());
+        let line = trace.line(&Ok(json!({})), started);
+        assert!(line.contains("to=alice\\u{1b}[2J "), "{line}");
+        assert!(!line.contains('\u{1b}'));
+        assert_eq!(escaped("bob@laptop"), "bob@laptop");
     }
 
     #[tokio::test]
