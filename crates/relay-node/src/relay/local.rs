@@ -580,6 +580,13 @@ impl LocalSessions {
                     .map(|session| Target::new(SessionKind::MuseOpen, session.session_id))
                     .ok_or(CallerMiss::Unattributed);
             }
+            // A Pi or Oh My Pi harness running Agent Relay's extension: the
+            // one binding it is the proven live holder of, or nobody.
+            if let Some(caller) =
+                pi_caller::caller(&self.config, table, current, process, below.as_ref())
+            {
+                return caller;
+            }
             if let Some(caller) = lock_held::caller(&self.config, table, pid, current, process) {
                 return caller;
             }
@@ -1386,11 +1393,17 @@ impl LocalInjector {
             SessionKind::Droid | SessionKind::Devin | SessionKind::CursorCli => {
                 lock_held::can_reply(&self.config, &*self.table, target)
             }
+            // A Pi or Oh My Pi session's tools run under the process holding
+            // its binding, which names the caller on the socket
+            // (`pi_caller`), so while that binding is live it can answer.
+            // Offered only where the caller rule names the session: its
+            // holder holds this one binding, across both flavors.
+            SessionKind::Pi | SessionKind::Omp => {
+                pi_caller::sole_binding(&self.config, &*self.table, target)
+            }
             // OpenClaw's tools never run under this core's socket: its
             // answer is read back from the Gateway (`final_answer`).
-            SessionKind::OpenClaw | SessionKind::Hermes | SessionKind::Pi | SessionKind::Omp => {
-                false
-            }
+            SessionKind::OpenClaw | SessionKind::Hermes => false,
         }
     }
 
@@ -2095,6 +2108,7 @@ mod notice_observe;
 #[cfg(test)]
 pub(crate) use notice_observe::observe_codex_notice;
 mod opencode_reply;
+mod pi_caller;
 mod plugins;
 pub use plugins::{
     is_development, local_config, plugins, plugins_for, plugins_with, plugins_with_options,
@@ -2113,6 +2127,7 @@ mod runtime_registration;
 #[cfg(unix)]
 mod tests {
     mod automatic_admission;
+    mod pi_caller;
 
     mod spawned_delivery;
     use super::*;

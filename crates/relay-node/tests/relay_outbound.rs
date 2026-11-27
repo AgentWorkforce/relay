@@ -6379,3 +6379,57 @@ async fn a_send_token_names_only_a_session_its_callers_host_holds() {
     );
     h.stop().await;
 }
+
+// A registered Pi or Oh My Pi session's tools are that session on the socket:
+// they read whoami and the roster and send as it.
+#[tokio::test]
+async fn registered_pi_and_omp_sessions_read_whoami_and_agents_and_send() {
+    let h = Harness::start().await;
+    h.fake.seed_agent("alice", "human", json!({}));
+    let mut names = Vec::new();
+    for (kind, id, pid) in [
+        (
+            SessionKind::Pi,
+            "a1b2c3d4-0000-4000-8000-0000000000a1",
+            4710,
+        ),
+        (
+            SessionKind::Omp,
+            "a1b2c3d4-0000-4000-8000-0000000000a2",
+            4720,
+        ),
+    ] {
+        let row = session(kind, id, "/work/invented");
+        h.sessions.0.lock().unwrap().push(row.clone());
+        h.sessions.call_from(pid, row);
+        h.sessions.bind_route(
+            Target::new(kind, id),
+            &format!("{}:{pid}:1:0123456789abcdef0123456789abcdef", kind.as_str()),
+        );
+        h.core
+            .register_target(&Target::new(kind, id), None, None)
+            .await
+            .unwrap();
+        let who = h.call(pid, "GET", "/whoami", Value::Null).await.unwrap();
+        let name = who["name"].as_str().unwrap().to_string();
+        let listed = h.call(pid, "GET", "/agents", Value::Null).await.unwrap();
+        let rows = listed["agents"].as_array().unwrap();
+        assert!(
+            rows.iter()
+                .any(|r| r["name"] == name.as_str() && r["is_self"] == true),
+            "{listed}"
+        );
+        h.call(
+            pid,
+            "POST",
+            "/send",
+            json!({"to": "alice", "text": "an invented note"}),
+        )
+        .await
+        .unwrap();
+        names.push(name);
+    }
+    assert_eq!(h.fake.calls("POST", "/v1/dm").len(), 2);
+    assert_ne!(names[0], names[1]);
+    h.stop().await;
+}

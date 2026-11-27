@@ -19,7 +19,9 @@ async fn start_pi_with(prepare: impl FnOnce(&Path, &FakeRelaycast, &str)) -> Har
                         "target":{"kind":"pi","id":CODEX},"title":"Pi",
                         "baseURL":fake.base_url,"registeredAt":1790853200.0,
                         "workspaceKey":WORKSPACE_KEY,"machinePrefix":"test-desk",
-                        "routeBinding":"pi:12:34:123456789012345678901234567890ab"}],
+                        "routeBinding":"pi:12:34:123456789012345678901234567890ab",
+                        // Pi's automatic answers are opt-in.
+                        "replyWithFinalAnswer":true}],
                     "tokens":{"pi-api":agent.token}
                 })
                 .to_string(),

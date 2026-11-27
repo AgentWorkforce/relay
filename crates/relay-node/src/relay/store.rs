@@ -672,8 +672,7 @@ impl Reply {
         registration: &Registration,
         prefix: &str,
     ) -> Option<Reply> {
-        if registration.reply_with_final_answer == Some(false)
-            || registration.target.kind == SessionKind::ClaudeCloud
+        if !registration.final_answers_on() || registration.target.kind == SessionKind::ClaudeCloud
         {
             return None;
         }
@@ -1759,7 +1758,7 @@ impl Store {
             let replying: HashSet<&str> = self
                 .registrations
                 .iter()
-                .filter(|r| r.reply_with_final_answer != Some(false))
+                .filter(|r| r.final_answers_on())
                 .map(|r| r.agent_id.as_str())
                 .collect();
             list.retain(|r| r.claimed == Some(true) || replying.contains(r.agent_id.as_str()));

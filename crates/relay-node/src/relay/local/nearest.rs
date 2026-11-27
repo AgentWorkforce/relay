@@ -45,7 +45,8 @@ impl LocalSessions {
     /// Whether the nearest agent process of this user's above `pid` (itself
     /// included) is OpenCode, rather than a Claude Code session, a trusted
     /// Codex, a Grok leader, Muse, Factory Droid, Devin, `cursor-agent` or a Cursor editor
-    /// extension host, or a VS Code Copilot runtime.
+    /// extension host, a VS Code Copilot runtime, or a Pi or Oh My Pi
+    /// harness running Agent Relay's extension.
     pub(super) fn opencode_is_nearest(&self, pid: i32, claude: &claude::Registry) -> bool {
         let table = &*self.table;
         let mut current = pid;
@@ -77,7 +78,8 @@ impl LocalSessions {
                     || devin::is_devin_process(table, current)
                     || crate::relay::cursor_cli::is_cursor_process(table, current)
                     || crate::relay::cursor_cli::editor::is_editor_host(table, current)
-                    || crate::relay::hook_agents::is_copilot_process(table, current);
+                    || crate::relay::hook_agents::is_copilot_process(table, current)
+                    || super::pi_caller::is_holder(&self.config, table, current);
                 if agent {
                     return false;
                 }
@@ -88,10 +90,10 @@ impl LocalSessions {
     }
 
     /// Whether the nearest agent process of this user's above `pid` (itself
-    /// included) is Factory Droid, Devin, Cursor CLI/editor or VS Code Copilot
-    /// one, rather than a Claude Code session, a trusted Codex, a Grok
+    /// included) is Factory Droid, Devin, Cursor CLI/editor, VS Code Copilot,
+    /// or a Pi or Oh My Pi harness holding its extension registry, rather than a Claude Code session, a trusted Codex, a Grok
     /// leader, OpenCode or Muse. It is what stops an environment tag a nested
-    /// Droid, Devin, Cursor or Copilot session inherited from an enclosing agent naming that
+    /// Droid, Devin, Cursor, Copilot, Pi or Oh My Pi session inherited from an enclosing agent naming that
     /// outer session: the file its own process holds, or the editor's hook
     /// record, decides instead.
     pub(super) fn devin_is_nearest(&self, pid: i32, claude: &claude::Registry) -> bool {
@@ -115,6 +117,7 @@ impl LocalSessions {
                     || crate::relay::cursor_cli::is_cursor_process(table, current)
                     || crate::relay::cursor_cli::editor::is_editor_host(table, current)
                     || crate::relay::hook_agents::is_copilot_process(table, current)
+                    || super::pi_caller::is_holder(&self.config, table, current)
                 {
                     return true;
                 }
