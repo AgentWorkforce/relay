@@ -173,6 +173,7 @@ pub const QUEUE_UNREADABLE: &str = "Waiting — Codex queue state is unavailable
 pub const HIDDEN_TURN_PENDING: &str =
     "Waiting — the session holds the message; its turn starts when the session is idle";
 pub const BEHIND_HIDDEN: &str = "Waiting — behind an earlier relay message the session holds";
+pub const BEHIND_QUEUE: &str = "Waiting — earlier Codex queue messages must finish first.";
 
 /// How long a handoff is given to show up in the rollout.
 pub(crate) const HANDOFF_GRACE: Duration = Duration::from_secs(45);

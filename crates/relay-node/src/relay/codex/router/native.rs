@@ -210,11 +210,7 @@ impl CodexRouter {
         }
         match self.routes.relay_waiting(thread) {
             Some(false) => {}
-            Some(true) => {
-                return Ok(InjectOutcome::Waiting(
-                    "Waiting — earlier Codex queue messages must finish first.".into(),
-                ))
-            }
+            Some(true) => return Ok(InjectOutcome::Waiting(BEHIND_QUEUE.into())),
             None => return Ok(InjectOutcome::Waiting(QUEUE_UNREADABLE.into())),
         }
         self.submit_native(&path, &key, thread, id, text, &bound, admit)

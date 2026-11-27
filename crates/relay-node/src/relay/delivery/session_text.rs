@@ -14,7 +14,8 @@ use crate::relay::store::Registration;
 use crate::relay::workspace::Secret;
 use std::sync::{MutexGuard, PoisonError};
 #[cfg(test)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 /// Why a delivery admitted before the organization's hold began waits.
 pub(crate) const HELD_SINCE: &str =
@@ -468,11 +469,20 @@ impl Core {
     /// A session's own queue (the mobile Claude handoff) settled
     /// `delivery_id`: read its agent's queue now rather than after the
     /// waiting retry, so the sender's receipt follows the outcome. A delivery
-    /// with no pending retry is left alone.
+    /// with no pending retry is left alone. The retry is made due rather than
+    /// dropped: it keeps what it knows (handed over, so never held behind an
+    /// earlier message) until that read settles it (#2290 review).
     pub(crate) fn settle_delivery_soon(&self, delivery_id: &str) {
-        let retry = self.receipt_state().retries.remove(delivery_id);
-        if let Some(retry) = retry {
-            self.request_drain(&retry.agent);
+        let agent = self
+            .receipt_state()
+            .retries
+            .get_mut(delivery_id)
+            .map(|retry| {
+                retry.after = Instant::now();
+                retry.agent.clone()
+            });
+        if let Some(agent) = agent {
+            self.request_drain(&agent);
         }
     }
 
@@ -485,13 +495,37 @@ impl Core {
                 agent: agent.into(),
                 after: Instant::now() + delay,
                 failures: 0,
+                send_order: None,
+                holds_later: false,
+                handed_over: false,
             },
         );
     }
 
+    /// Whether `delivery_id` still waits out its retry.
     #[cfg(test)]
     pub(crate) fn delivery_retry_pending(&self, delivery_id: &str) -> bool {
-        self.receipt_state().retries.contains_key(delivery_id)
+        self.receipt_state()
+            .retries
+            .get(delivery_id)
+            .is_some_and(|retry| retry.after > Instant::now())
+    }
+
+    /// Whether `delivery_id`'s retry knows it was handed over.
+    #[cfg(test)]
+    pub(crate) fn delivery_handed_over(&self, delivery_id: &str) -> bool {
+        self.receipt_state()
+            .retries
+            .get(delivery_id)
+            .is_some_and(|retry| retry.handed_over)
+    }
+
+    /// Marks `delivery_id`'s retry handed over, as an `Accepted` one is.
+    #[cfg(test)]
+    pub(crate) fn mark_delivery_handed_over(&self, delivery_id: &str) {
+        if let Some(retry) = self.receipt_state().retries.get_mut(delivery_id) {
+            retry.handed_over = true;
+        }
     }
 }
 
@@ -499,6 +533,35 @@ impl Core {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // #2290 review: a delivery the session's own queue settled is read again
+    // at once, and keeps its handover, so that read is never held behind an
+    // earlier message still waiting.
+    #[tokio::test]
+    async fn settling_soon_makes_the_retry_due_and_keeps_its_handover() {
+        use crate::relay::daemon::{Config, Plugins};
+        use crate::relay::paths::CorePaths;
+        use crate::relay::push::PushTiming;
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config {
+            paths: CorePaths::for_socket(temp.path().join("core.sock")).unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: Default::default(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let (core, _signals) = Core::with_plugins(config, Plugins::default());
+        core.hold_delivery_retry("del_1", "agent", Duration::from_secs(60));
+        core.mark_delivery_handed_over("del_1");
+        assert!(core.delivery_retry_pending("del_1"));
+        core.settle_delivery_soon("del_1");
+        assert!(!core.delivery_retry_pending("del_1"));
+        assert!(core.delivery_handed_over("del_1"));
+    }
 
     #[test]
     fn spawner_input_requires_opt_in_verified_id_and_a_direct_headless_session() {
