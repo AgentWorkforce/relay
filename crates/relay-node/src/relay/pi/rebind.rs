@@ -172,14 +172,40 @@ pub(super) fn follow(
     } else {
         chain.pop();
     }
-    for earlier in &chain {
-        move_queued(uid, registration, &earlier.directory, &binding.directory).map_err(|_| {
+    // Newest first, so the latest copy of each message is the one kept: an
+    // older copy left behind by an interrupted move never overrides a
+    // claim or a receipt a later process made.
+    let mut seen = present(&binding.directory);
+    for earlier in chain.iter().rev() {
+        move_queued(
+            uid,
+            registration,
+            &earlier.directory,
+            &binding.directory,
+            &mut seen,
+        )
+        .map_err(|_| {
             InjectOutcome::Waiting(format!(
                 "Could not move this session's queued messages to its new {name} process yet."
             ))
         })?;
     }
     Ok(())
+}
+
+/// The message records already in `directory`, by file stem.
+fn present(directory: &Path) -> std::collections::HashSet<String> {
+    fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            let stem = file.strip_suffix(".json")?;
+            (stem.len() == 64 && stem.bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| stem.to_string())
+        })
+        .collect()
 }
 
 /// Brings `from`'s unfinished messages to `to`, where the new extension
@@ -189,12 +215,15 @@ pub(super) fn follow(
 /// recorded once Pi's history shows it; a `recorded` one without its answer
 /// yet gets its answer there. Copies get new arrival sequences, in the old
 /// order. Saved owner-mode choices are copied too, with or without a
-/// message. Each step can be repeated after a failure.
+/// message. A message `seen` in a newer directory already has its latest
+/// copy there: this older copy is only retired. Each step can be repeated
+/// after a failure.
 fn move_queued(
     uid: u32,
     registration: &Registration,
     from: &Path,
     to: &Path,
+    seen: &mut std::collections::HashSet<String>,
 ) -> std::io::Result<()> {
     let _old = delivery_lock(from)?;
     let _new = delivery_lock(to)?;
@@ -219,16 +248,27 @@ fn move_queued(
         let Some(record) = read::<Delivery>(&entry.path(), uid) else {
             continue;
         };
+        if record.session_id != registration.target.id
+            || key(&record.message_id) != stem
+            || record.state == "moved"
+        {
+            continue;
+        }
         let unfinished = match record.state.as_str() {
             "pending" | "claimed" => true,
             "recorded" => record.answer.is_none(),
             _ => false,
         };
-        if record.session_id == registration.target.id
-            && key(&record.message_id) == stem
-            && unfinished
-        {
+        if seen.contains(stem) {
+            // A newer copy exists: this one is stale, whatever its state.
+            let mut stale = record;
+            stale.state = "moved".into();
+            atomic_write(&entry.path(), &serde_json::to_vec(&stale)?)?;
+        } else if unfinished {
             queued.push((record.sequence, stem.to_string(), record));
+        } else {
+            // Finished here; it stays, and older copies are stale.
+            seen.insert(stem.to_string());
         }
     }
     // In arrival order, as the extension reads its inbox: records from
@@ -248,6 +288,7 @@ fn move_queued(
         }
         record.state = "moved".into();
         atomic_write(&from.join(&file), &serde_json::to_vec(&record)?)?;
+        seen.insert(stem);
     }
     Ok(())
 }
@@ -798,5 +839,77 @@ mod tests {
         ));
         assert!(!successor(&world.pi, &instance(MAX_LINKS - 1)));
         assert!(record(&world.pi, NEW, "m-1").is_none());
+    }
+
+    /// A move from the first process to the second copied `m-1` but stopped
+    /// before retiring the first copy; the second process then claimed it.
+    fn interrupted_copy_then(world: &World, state: &str, answer: Option<&str>) -> Registration {
+        start(world, &world.pi, 900, 5, OLD);
+        let r = registration(&world.pi, world);
+        assert!(matches!(
+            deliver(world, &world.pi, &r, "m-1"),
+            InjectOutcome::Accepted(_)
+        ));
+        exit(world, 900);
+        start(world, &world.pi, 901, 6, NEW);
+        let new = binding(&world.pi, &world.table, current_uid(), ID).unwrap();
+        let link = Successor {
+            version: 1,
+            session_id: ID.into(),
+            reference: new.reference,
+        };
+        atomic_write(
+            &world.pi.runtime.join(OLD).join(SUCCESSOR),
+            &serde_json::to_vec(&link).unwrap(),
+        )
+        .unwrap();
+        let mut copy = record(&world.pi, OLD, "m-1").unwrap();
+        copy.state = state.into();
+        copy.answer = answer.map(str::to_owned);
+        atomic_write(
+            &config_path(&world.pi, NEW, "m-1"),
+            &serde_json::to_vec(&copy).unwrap(),
+        )
+        .unwrap();
+        exit(world, 901);
+        start(world, &world.pi, 902, 7, THIRD);
+        r
+    }
+
+    #[test]
+    fn a_stale_older_copy_never_overrides_a_newer_claim() {
+        let world = world();
+        let r = interrupted_copy_then(&world, "claimed", None);
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-2"),
+            InjectOutcome::Accepted(_)
+        ));
+        // The claim made by the second process reaches the third; the first
+        // process's pending copy is retired, never resubmitted.
+        assert_eq!(record(&world.pi, THIRD, "m-1").unwrap().state, "claimed");
+        assert_eq!(record(&world.pi, OLD, "m-1").unwrap().state, "moved");
+        assert_eq!(record(&world.pi, NEW, "m-1").unwrap().state, "moved");
+    }
+
+    #[test]
+    fn a_stale_older_copy_never_hides_a_newer_answer() {
+        let world = world();
+        let r = interrupted_copy_then(&world, "recorded", Some("an invented answer"));
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-2"),
+            InjectOutcome::Accepted(_)
+        ));
+        // The finished copy stays where it was recorded; the stale one is
+        // retired and nothing goes to the third process.
+        assert!(record(&world.pi, THIRD, "m-1").is_none());
+        assert_eq!(record(&world.pi, OLD, "m-1").unwrap().state, "moved");
+        assert!(matches!(
+            deliver(&world, &world.pi, &r, "m-1"),
+            InjectOutcome::Delivered
+        ));
+        assert_eq!(
+            final_answer(&world.pi, current_uid(), &r, &MessageRef::of("m-1")).as_deref(),
+            Some("an invented answer")
+        );
     }
 }
