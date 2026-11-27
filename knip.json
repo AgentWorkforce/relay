@@ -24,6 +24,5 @@
     }
   },
   "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**", "packages/openclaw/bridge/**"],
-  "ignoreDependencies": ["turbo"],
   "ignoreWorkspaces": ["packages/cloud"]
 }
