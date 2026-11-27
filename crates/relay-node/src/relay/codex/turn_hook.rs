@@ -16,8 +16,10 @@
 //! (interrupted, failed) leaves it offered; the router's next pass, within
 //! seconds, sends it by the usual routes. Each message is claimed by exactly
 //! one route: the claim is written to disk before the hook is given the
-//! message (`Route::Hook`) and before any other route is (`Route::Elsewhere`),
-//! and neither ever turns into the other. A message the hook took that Codex
+//! message (`Route::Hook`) and before any other route is (`Route::Elsewhere`).
+//! A host probe that definitively found no host may release only its own
+//! new claim; successful or uncertain handoffs never change routes.
+//! A message the hook took that Codex
 //! does not record is in doubt and never sent again.
 
 use crate::relay::codex::compact::PEER_AUTHORITY_NOTE;
@@ -103,6 +105,15 @@ pub enum Taken {
     Unrecorded,
 }
 
+/// One persisted external probe. Only a newly acquired claim can be
+/// released after a definitive no-handoff answer, and any later claimant
+/// invalidates this token.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct ProbeClaim {
+    order: u64,
+    releasable: bool,
+}
+
 /// The messages waiting for a running Codex turn's hook, and every route
 /// claim since, kept in a journal file. Each change reads the file under
 /// its lock and writes it back before anything is handed out, so cores
@@ -113,6 +124,8 @@ pub struct TurnInbox {
     permanent_claims: bool,
     offers: Mutex<HashMap<String, Offer>>,
     now_ms: Box<dyn Fn() -> i64 + Send + Sync>,
+    #[cfg(test)]
+    fail_journal_writes: std::sync::atomic::AtomicBool,
 }
 
 impl Default for TurnInbox {
@@ -122,6 +135,8 @@ impl Default for TurnInbox {
             permanent_claims: false,
             offers: Mutex::default(),
             now_ms: Box::new(crate::relay::state::now_ms),
+            #[cfg(test)]
+            fail_journal_writes: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -147,6 +162,12 @@ impl TurnInbox {
     pub(crate) fn with_clock(mut self, now_ms: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
         self.now_ms = Box::new(now_ms);
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_journal_writes(&self, fail: bool) {
+        self.fail_journal_writes
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether claims are kept on disk at all: without a record nothing is
@@ -208,6 +229,15 @@ impl TurnInbox {
         });
         let (result, changed) = change(&mut journal, now);
         if changed || journal.claims.len() != before {
+            #[cfg(test)]
+            if self
+                .fail_journal_writes
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(std::io::Error::other(
+                    "injected claim journal write failure",
+                ));
+            }
             let bytes = serde_json::to_vec(&journal).map_err(std::io::Error::other)?;
             write(path, &bytes)?;
         }
@@ -279,36 +309,138 @@ impl TurnInbox {
     /// is given it. `Err` when the hook already has it, or the claim could
     /// not be written.
     pub fn leave(&self, message_id: &str) -> Result<(), Taken> {
+        self.claim_elsewhere(message_id).map(|_| ())
+    }
+
+    pub(crate) fn claim_elsewhere(&self, message_id: &str) -> Result<ProbeClaim, Taken> {
         let left = self.edit(|journal, now| {
             let before = journal.claims.get(message_id).cloned();
             match before.as_ref().map(|claim| claim.route) {
-                Some(Route::Elsewhere) => return (Ok(()), false),
                 Some(Route::Hook) => {
                     let at_ms = before.map_or(0, |claim| claim.at_ms);
                     return (Err(Taken::Hook { at_ms }), false);
                 }
-                Some(Route::Offered) | None => {}
+                Some(Route::Elsewhere | Route::Offered) | None => {}
             }
+            let Some(next) = journal.next.checked_add(1) else {
+                return (Err(Taken::Unrecorded), false);
+            };
+            let order = journal.next;
+            journal.next = next;
+            let releasable = before
+                .as_ref()
+                .is_none_or(|claim| claim.route != Route::Elsewhere);
             let claim = Claim {
                 thread: before
                     .as_ref()
                     .map(|claim| claim.thread.clone())
                     .unwrap_or_default(),
                 route: Route::Elsewhere,
-                at_ms: now,
-                order: before.as_ref().map_or(journal.next, |claim| claim.order),
+                at_ms: before
+                    .as_ref()
+                    .filter(|claim| claim.route == Route::Elsewhere)
+                    .map_or(now, |claim| claim.at_ms),
+                order,
             };
             journal.claims.insert(message_id.to_string(), claim);
-            (Ok(()), true)
+            (Ok(ProbeClaim { order, releasable }), true)
         });
         match left {
-            Ok(Ok(())) => {
+            Ok(Ok(claim)) => {
                 self.offers().remove(message_id);
-                Ok(())
+                Ok(claim)
             }
             Ok(Err(taken)) => Err(taken),
             Err(_) => Err(Taken::Unrecorded),
         }
+    }
+
+    /// Return a new probe's claim only when the host definitively did not
+    /// take the message. Existing, replaced and uncertain claims stay put.
+    pub(crate) fn release_probe(
+        &self,
+        message_id: &str,
+        probe: &ProbeClaim,
+    ) -> std::io::Result<bool> {
+        if !probe.releasable {
+            return Ok(false);
+        }
+        // Record the definitive no-handoff result before changing the claim.
+        // This separate, locked receipt survives a failed journal write and
+        // lets a new router finish the exact same guarded release.
+        self.edit_releases(|releases| {
+            let newer = releases
+                .get(message_id)
+                .is_some_and(|saved| saved.order >= probe.order);
+            if !newer {
+                releases.insert(message_id.to_owned(), probe.clone());
+            }
+            (Ok(()), !newer)
+        })?;
+        self.retry_probe_release(message_id)
+    }
+
+    pub(crate) fn retry_probe_release(&self, message_id: &str) -> std::io::Result<bool> {
+        self.edit_releases(|releases| {
+            let Some(probe) = releases.get(message_id) else {
+                return (Ok(false), false);
+            };
+            match self.release_probe_claim(message_id, probe) {
+                Ok(released) => {
+                    releases.remove(message_id);
+                    (Ok(released), true)
+                }
+                Err(error) => (Err(error), false),
+            }
+        })
+    }
+
+    /// The receipt file has its own lock. Always take it before the claim
+    /// journal's lock; journal-only operations never acquire this lock.
+    fn edit_releases<R>(
+        &self,
+        change: impl FnOnce(&mut BTreeMap<String, ProbeClaim>) -> (std::io::Result<R>, bool),
+    ) -> std::io::Result<R> {
+        let record = self
+            .path
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("no Codex hook record"))?;
+        let path = record.with_extension("releases.json");
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(record.with_extension("releases.lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        let mut releases = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) => return Err(error),
+        };
+        let (result, changed) = change(&mut releases);
+        if changed {
+            write(
+                &path,
+                &serde_json::to_vec(&releases).map_err(std::io::Error::other)?,
+            )?;
+        }
+        result
+    }
+
+    fn release_probe_claim(&self, message_id: &str, probe: &ProbeClaim) -> std::io::Result<bool> {
+        if !probe.releasable {
+            return Ok(false);
+        }
+        self.edit(|journal, _| {
+            let ours = journal
+                .claims
+                .get(message_id)
+                .is_some_and(|claim| claim.route == Route::Elsewhere && claim.order == probe.order);
+            if ours {
+                journal.claims.remove(message_id);
+            }
+            (ours, ours)
+        })
     }
 
     /// Whether a message waits for `thread`'s hook. Read before the caller
@@ -476,6 +608,63 @@ mod tests {
         let inbox = TurnInbox::open(dir.join("codex-turn-hook.json"))
             .with_clock(move || now.load(Ordering::SeqCst));
         (inbox, clock)
+    }
+
+    #[test]
+    fn a_probe_with_no_handoff_can_return_its_new_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let (inbox, _) = inbox(dir.path());
+        inbox.offer(THREAD, "m1", &text("m1")).unwrap();
+        let probe = inbox.claim_elsewhere("m1").unwrap();
+        assert_eq!(inbox.answer(THREAD, HookEvent::PostToolUse), json!({}));
+        assert!(inbox.release_probe("m1", &probe).unwrap());
+        inbox.offer(THREAD, "m1", &text("m1")).unwrap();
+        assert!(
+            inbox.answer(THREAD, HookEvent::PostToolUse)["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .ends_with("Can you check CI?")
+        );
+    }
+
+    #[test]
+    fn a_probe_cannot_return_an_existing_or_superseding_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let (inbox, _) = inbox(dir.path());
+        let other = TurnInbox::open(dir.path().join("codex-turn-hook.json")).with_clock(|| 1_000);
+        inbox.leave("existing").unwrap();
+        let probe = inbox.claim_elsewhere("existing").unwrap();
+        assert!(!inbox.release_probe("existing", &probe).unwrap());
+        assert_eq!(inbox.claimed("existing"), Claimed::Elsewhere);
+
+        let probe = inbox.claim_elsewhere("superseded").unwrap();
+        other.leave("superseded").unwrap();
+        assert!(!inbox.release_probe("superseded", &probe).unwrap());
+        assert_eq!(inbox.claimed("superseded"), Claimed::Elsewhere);
+
+        let first = inbox.claim_elsewhere("concurrent").unwrap();
+        let second = other.claim_elsewhere("concurrent").unwrap();
+        assert!(!inbox.release_probe("concurrent", &first).unwrap());
+        assert!(!other.release_probe("concurrent", &second).unwrap());
+        assert_eq!(inbox.claimed("concurrent"), Claimed::Elsewhere);
+
+        let old = inbox.claim_elsewhere("settled").unwrap();
+        inbox.settle("settled");
+        let current = other.claim_elsewhere("settled").unwrap();
+        assert!(!inbox.release_probe("settled", &old).unwrap());
+        assert!(other.release_probe("settled", &current).unwrap());
+    }
+
+    #[test]
+    fn a_probe_does_not_overwrite_an_unreadable_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let (inbox, _) = inbox(dir.path());
+        let probe = inbox.claim_elsewhere("m1").unwrap();
+        let path = dir.path().join("codex-turn-hook.json");
+        std::fs::write(&path, b"invalid json").unwrap();
+        assert!(inbox.release_probe("m1", &probe).is_err());
+        assert_eq!(inbox.claimed("m1"), Claimed::Unknown);
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid json");
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use super::super::turn_hook::CLAIM_UNRECORDED;
 use super::*;
 use crate::relay::codex::turn_hook::{self, Claimed, HookEvent, TurnInbox};
 use std::sync::atomic::AtomicI64;
@@ -31,6 +32,188 @@ fn context(answer: &serde_json::Value) -> &str {
     answer["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default()
+}
+
+#[test]
+fn a_failed_release_is_recovered_from_disk_after_a_router_restart() {
+    for permanent in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(turn_hook::RECORD);
+        let fake = Fake::new();
+        fake.live.store(true, Ordering::SeqCst);
+        let open = || {
+            let turns = TurnInbox::open(path.clone());
+            let turns = if permanent {
+                turns.retain_claims()
+            } else {
+                turns
+            };
+            let inbox = Arc::new(StopHookInbox::with_turns(turns));
+            inbox.set_ready(true);
+            let router = CodexRouter::new(fake.clone()).with_stop_hook(inbox.clone());
+            (router, inbox)
+        };
+        {
+            let (router, inbox) = open();
+            let claim = router.claim_host_probe("restart").unwrap();
+            inbox.turns().fail_journal_writes(true);
+            assert!(router.release_host_probe("restart", claim).is_err());
+            assert_eq!(inbox.turns().claimed("restart"), Claimed::Elsewhere);
+        }
+        // Both the router's pending map and its inbox have been dropped.
+        let (router, inbox) = open();
+        assert!(router.pending_probe_releases.lock().unwrap().is_empty());
+        fake.busy.store(true, Ordering::SeqCst);
+        assert_eq!(
+            router.inject_with(THREAD, "restart", TEXT, &|| None),
+            InjectOutcome::WaitingForTurn(turn_hook::WAITING.into())
+        );
+        assert!(
+            context(&inbox.turns().answer(THREAD, HookEvent::PostToolUse))
+                .ends_with("Can you check CI?")
+        );
+        assert_eq!(
+            inbox.turns().answer(THREAD, HookEvent::PostToolUse),
+            serde_json::json!({})
+        );
+        assert_eq!(count(&fake.app_sends), 0);
+        assert_eq!(count(&fake.window_sends), 0);
+    }
+}
+
+#[test]
+fn a_failed_no_handoff_release_recovers_before_the_next_turn() {
+    for permanent in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(turn_hook::RECORD);
+        let fake = Fake::new();
+        fake.live.store(true, Ordering::SeqCst);
+        let turns = TurnInbox::open(path.clone());
+        let turns = if permanent {
+            turns.retain_claims()
+        } else {
+            turns
+        };
+        let inbox = Arc::new(StopHookInbox::with_turns(turns));
+        inbox.set_ready(true);
+        let router = CodexRouter::new(fake.clone()).with_stop_hook(inbox.clone());
+        let claim = router.claim_host_probe("retry").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        // The host has definitively declined, but the journal is temporarily
+        // unreadable when its guarded claim release is attempted.
+        std::fs::write(&path, b"temporarily unreadable").unwrap();
+        assert!(router.release_host_probe("retry", claim).is_err());
+        assert_eq!(
+            router.inject_with(THREAD, "retry", TEXT, &|| None),
+            InjectOutcome::Waiting(CLAIM_UNRECORDED.into())
+        );
+        assert_eq!(count(&fake.app_sends), 0);
+        std::fs::write(&path, before).unwrap();
+        fake.busy.store(true, Ordering::SeqCst);
+        assert_eq!(
+            router.inject_with(THREAD, "retry", TEXT, &|| None),
+            InjectOutcome::WaitingForTurn(turn_hook::WAITING.into())
+        );
+        assert!(
+            context(&inbox.turns().answer(THREAD, HookEvent::PostToolUse))
+                .ends_with("Can you check CI?")
+        );
+        assert_eq!(
+            inbox.turns().answer(THREAD, HookEvent::PostToolUse),
+            serde_json::json!({})
+        );
+        assert!(router.pending_probe_releases.lock().unwrap().is_empty());
+        assert_eq!(count(&fake.app_sends), 0);
+        assert_eq!(count(&fake.window_sends), 0);
+    }
+}
+
+#[test]
+fn retrying_a_failed_release_preserves_a_superseding_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fake, router, inbox, _) = working(dir.path());
+    let path = dir.path().join(turn_hook::RECORD);
+    let claim = router.claim_host_probe("superseded").unwrap();
+    let before = std::fs::read(&path).unwrap();
+    std::fs::write(&path, b"temporarily unreadable").unwrap();
+    assert!(router.release_host_probe("superseded", claim).is_err());
+    std::fs::write(&path, before).unwrap();
+    inbox.turns().leave("superseded").unwrap();
+    router.retry_host_probe_release("superseded").unwrap();
+    assert!(router.pending_probe_releases.lock().unwrap().is_empty());
+    assert_eq!(inbox.turns().claimed("superseded"), Claimed::Elsewhere);
+    assert_eq!(
+        inbox.turns().answer(THREAD, HookEvent::PostToolUse),
+        serde_json::json!({})
+    );
+    assert_eq!(count(&fake.app_sends), 0);
+}
+
+#[test]
+fn an_idle_hook_only_message_reaches_the_next_turn_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Fake::new();
+    fake.live.store(true, Ordering::SeqCst);
+    {
+        let (router, inbox, _) = restarted(&fake, dir.path());
+        assert_eq!(
+            router.inject_with(THREAD, "idle", TEXT, &|| None),
+            InjectOutcome::Waiting(WAITING_FOR_CODEX_TURN.into())
+        );
+        assert_eq!(inbox.turns().claimed("idle"), Claimed::Free);
+        assert_eq!(count(&fake.app_sends), 1);
+        assert_eq!(count(&fake.window_sends), 1);
+        assert_eq!(count(&fake.queue_sends), 0);
+    }
+    fake.busy.store(true, Ordering::SeqCst);
+    let (router, inbox, _) = restarted(&fake, dir.path());
+    assert_eq!(
+        router.inject_with(THREAD, "idle", TEXT, &|| None),
+        InjectOutcome::WaitingForTurn(turn_hook::WAITING.into())
+    );
+    assert!(
+        context(&inbox.turns().answer(THREAD, HookEvent::PostToolUse))
+            .ends_with("Can you check CI?")
+    );
+    assert_eq!(
+        inbox.turns().answer(THREAD, HookEvent::PostToolUse),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        router.inject_with(THREAD, "idle", TEXT, &|| None),
+        InjectOutcome::Accepted(RECORDING.into())
+    );
+    assert_eq!(count(&fake.app_sends), 1, "no second host handoff");
+    assert_eq!(count(&fake.window_sends), 1);
+    assert_eq!(count(&fake.queue_sends), 0);
+}
+
+#[test]
+fn an_uncertain_host_probe_never_reopens_the_hook_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Fake::new();
+    fake.live.store(true, Ordering::SeqCst);
+    *fake.app_server.lock().unwrap() = Some(Err(TurnError::InDoubt("lost answer".into())));
+    {
+        let (router, inbox, _) = restarted(&fake, dir.path());
+        assert_eq!(
+            router.inject_with(THREAD, "uncertain", TEXT, &|| None),
+            InjectOutcome::InDoubt("lost answer".into())
+        );
+        assert_eq!(inbox.turns().claimed("uncertain"), Claimed::Elsewhere);
+    }
+    *fake.app_server.lock().unwrap() = Some(Ok(false));
+    let (router, inbox, _) = restarted(&fake, dir.path());
+    let _ = router.inject_with(THREAD, "uncertain", TEXT, &|| None);
+    assert_eq!(inbox.turns().claimed("uncertain"), Claimed::Elsewhere);
+    fake.busy.store(true, Ordering::SeqCst);
+    let _ = router.inject_with(THREAD, "uncertain", TEXT, &|| None);
+    assert_eq!(inbox.turns().claimed("uncertain"), Claimed::Elsewhere);
+    assert_eq!(
+        inbox.turns().answer(THREAD, HookEvent::PostToolUse),
+        serde_json::json!({})
+    );
+    assert_eq!(count(&fake.queue_sends), 0);
 }
 
 // A message for a terminal Codex in a long turn reaches it at the turn's

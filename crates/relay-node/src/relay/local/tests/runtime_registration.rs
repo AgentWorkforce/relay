@@ -116,6 +116,60 @@ fn seed(w: &World, ids: &[&str]) -> rusqlite::Connection {
 }
 
 #[test]
+fn trusted_codex_hook_makes_only_proven_runtime_user_chats_reachable() {
+    let mut w = world();
+    let db = seed(&w, &[THREAD, OTHER]);
+    let hook = Arc::new(crate::relay::codex::stop_hook::StopHookInbox::default());
+    w.sessions = w.sessions.with_codex_hook(hook.clone());
+    let rows = || w.sessions.sessions();
+    assert!(rows()
+        .iter()
+        .filter(|s| s.target.kind == SessionKind::Codex)
+        .all(|s| !s.live));
+    hook.set_ready(true);
+    let candidates = w.sessions.automatic_candidates();
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates
+        .iter()
+        .all(|candidate| candidate.runtime.is_some()
+            && w.sessions.automatic_candidate_current(candidate)));
+    assert!(rows()
+        .iter()
+        .filter(|s| s.target.kind == SessionKind::Codex)
+        .all(|s| s.live));
+    let host = w.table.processes.lock().unwrap()[&500].clone();
+    w.table.remove(500);
+    assert!(candidates
+        .iter()
+        .all(|candidate| !w.sessions.automatic_candidate_current(candidate)));
+    assert!(rows()
+        .iter()
+        .filter(|s| s.target.kind == SessionKind::Codex)
+        .all(|s| !s.live));
+    w.table.insert(500, host);
+    // An archived sibling and a subagent rollout never inherit reachability.
+    db.execute("update threads set archived=1 where id=?1", [OTHER])
+        .unwrap();
+    assert!(!rows().iter().any(|s| s.target.id == OTHER && s.live));
+    let rollout = w
+        .sessions
+        .config
+        .codex
+        .home
+        .join(format!("rollout-test-{THREAD}.jsonl"));
+    std::fs::write(&rollout, format!("{}\n", serde_json::json!({
+        "type":"session_meta", "payload": {"id": THREAD, "thread_source":"subagent", "parent_thread_id": OTHER,
+        "source":{"subagent":{"thread_spawn":{"parent_thread_id":OTHER}}}}
+    }))).unwrap();
+    assert!(!rows().iter().any(|s| s.target.id == THREAD && s.live));
+    hook.set_ready(false);
+    assert!(rows()
+        .iter()
+        .filter(|s| s.target.kind == SessionKind::Codex)
+        .all(|s| !s.live));
+}
+
+#[test]
 /// History limits and missing delivery routes must not hide loaded user chats.
 fn runtime_candidates_are_independent_of_deliverability_and_recent_history() {
     let w = world();

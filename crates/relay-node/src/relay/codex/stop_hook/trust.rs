@@ -310,7 +310,15 @@ impl AppServer {
         let id = self.next_id;
         self.next_id += 1;
         self.send(&json!({"id": id, "method": method, "params": params}))?;
-        let deadline = Instant::now() + APP_SERVER_TIMEOUT;
+        // A Windows background service runs below normal priority. Listing
+        // hooks can outlast initialization while Codex reads its user config.
+        // Keep other requests short, but allow that discovery to finish.
+        let timeout = if cfg!(windows) && method == "hooks/list" {
+            Duration::from_secs(60)
+        } else {
+            APP_SERVER_TIMEOUT
+        };
+        let deadline = Instant::now() + timeout;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             let line = self
