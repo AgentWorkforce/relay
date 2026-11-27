@@ -182,9 +182,27 @@ pub fn plugins_with_options(
             development,
         ),
     ));
-    // Agent Relay Dev stages into and drains its own Cursor inbox too.
+    // Agent Relay Dev stages into and drains its own Cursor, Copilot, and
+    // Antigravity inboxes too.
     local.cursor = local.cursor.development(development);
     local.copilot = local.copilot.development(development);
+    local.antigravity = local.antigravity.development(development);
+    let antigravity_settings = Arc::new(crate::relay::antigravity::AntigravitySettings::new(
+        &local.antigravity,
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
+    ));
+    if !matches!(build, outbound::Build::Profile(_)) {
+        let antigravity_settings = antigravity_settings.clone();
+        let _ = std::thread::Builder::new()
+            .name("antigravity-hooks".into())
+            .spawn(move || {
+                if let Err(error) = antigravity_settings.refresh() {
+                    crate::relay::diagnostics::write(format_args!(
+                        "antigravity: hooks refresh failed: {error}"
+                    ));
+                }
+            });
+    }
     // Agent Relay's Cursor CLI hooks in ~/.cursor/hooks.json hand staged
     // messages to the session at its next tool call or turn end. An
     // installed copy is brought up to date off the start path.
@@ -373,6 +391,7 @@ pub fn plugins_with_options(
                         opencode_settings,
                         devin_settings,
                         cursor_settings,
+                        antigravity_settings,
                         stop_hook_settings,
                         session_hook_settings,
                     ]

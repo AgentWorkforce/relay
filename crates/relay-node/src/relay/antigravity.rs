@@ -17,7 +17,7 @@ mod tests;
 pub use delivery::send;
 pub use receipts::final_answer;
 pub use sessions::{discover, hook_answer, session};
-pub use settings::AntigravitySettings;
+pub use settings::{AntigravitySettings, SETTING as DIRECT_DELIVERY_SETTING};
 
 #[derive(Clone)]
 pub struct AntigravityConfig {
@@ -64,6 +64,7 @@ impl AntigravityConfig {
     pub fn development(mut self, development: bool) -> Self {
         self.development = development;
         self.inbox = Arc::new(TurnInbox::open(self.state().join("claims.json")).retain_claims());
+        self.helper = Arc::new(RwLock::new(self.helper()));
         self
     }
 

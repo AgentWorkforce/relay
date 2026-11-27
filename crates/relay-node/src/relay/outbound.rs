@@ -408,8 +408,11 @@ pub enum Purpose {
 }
 
 fn is_supported_kind(kind: SessionKind) -> bool {
-    use SessionKind::{ClaudeTerminal, Codex, CursorCli, Devin};
-    matches!(kind, Codex | ClaudeTerminal | Devin | CursorCli)
+    use SessionKind::{Antigravity, ClaudeTerminal, Codex, CursorCli, Devin};
+    matches!(
+        kind,
+        Codex | ClaudeTerminal | Devin | CursorCli | Antigravity
+    )
 }
 
 fn connect_gone_error(code: &str, message: String) -> OutboundError {

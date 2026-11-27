@@ -112,24 +112,55 @@ pub fn held(
     sessions
 }
 
-/// The Antigravity `language_server` that invoked a command hook process `pid`
-/// (either directly via `exec`, or through the `sh -c` shell Antigravity spawns).
+/// The Antigravity `language_server` that directly invoked a managed command
+/// hook process `pid` (our managed hook uses `exec`, so `sh` replaces itself
+/// with the helper and `language_server` is its direct parent). Allowing a
+/// shell parent would let a `run_command` pipeline invoke the helper and forge
+/// another conversation's hook payload.
 pub fn hook_runtime(table: &dyn ProcessTable, pid: i32, uid: u32) -> Option<ProcessInfo> {
-    let hook = table.process(pid).filter(|p| p.uid == uid)?;
-    if let Some(rt) = runtime(table, hook.parent, uid) {
-        return Some(rt);
-    }
-    let shell = table
-        .process(hook.parent)
+    let hook = table
+        .process(pid)
         .filter(|p| p.uid == uid && !table.zombie(p.pid))?;
-    let shell_name = table
-        .executable(shell.pid)
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))?;
-    if !matches!(shell_name.as_str(), "sh" | "zsh" | "bash" | "dash") {
-        return None;
+    let rt = runtime(table, hook.parent, uid)?;
+    (table.process(pid) == Some(hook)).then_some(rt)
+}
+
+/// Confirm the hook process environment and working directory match an
+/// Antigravity `hooks.json` invocation rather than an agent `run_command` tool
+/// invocation:
+/// - the helper's environment must be readable (it is not an Apple SIP binary)
+/// - `ANTIGRAVITY_SOURCE_METADATA` (set on `run_command` tool shells) must be
+///   absent
+/// - if `ANTIGRAVITY_CONVERSATION_ID` is present, it must match `sid`
+/// - the hook's working directory must be `config.config_dir` (`hooks.json`
+///   always executes with CWD set to the directory containing `hooks.json`)
+pub fn hook_environment_ok(
+    config: &AntigravityConfig,
+    table: &dyn ProcessTable,
+    pid: i32,
+    sid: &str,
+) -> bool {
+    if !table.environment_readable(pid) {
+        return false;
     }
-    let rt = runtime(table, shell.parent, uid)?;
-    (table.process(shell.pid) == Some(shell)).then_some(rt)
+    if table
+        .environment_var(pid, "ANTIGRAVITY_SOURCE_METADATA")
+        .is_some()
+    {
+        return false;
+    }
+    if let Some(tagged) = table.environment_var(pid, "ANTIGRAVITY_CONVERSATION_ID") {
+        if tagged.trim() != sid {
+            return false;
+        }
+    }
+    let Some(cwd) = table.cwd(pid) else {
+        return false;
+    };
+    let expected =
+        std::fs::canonicalize(&config.config_dir).unwrap_or_else(|_| config.config_dir.clone());
+    let actual = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+    actual == expected
 }
 
 pub fn hook_holds(
@@ -142,5 +173,7 @@ pub fn hook_holds(
     let Some(rt) = hook_runtime(table, pid, uid) else {
         return false;
     };
-    held(config, table, rt.pid, uid).iter().any(|id| id == sid) && table.process(rt.pid) == Some(rt)
+    hook_environment_ok(config, table, pid, sid)
+        && held(config, table, rt.pid, uid).iter().any(|id| id == sid)
+        && table.process(rt.pid) == Some(rt)
 }

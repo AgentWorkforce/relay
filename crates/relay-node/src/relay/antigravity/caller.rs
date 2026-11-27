@@ -17,7 +17,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const TAIL_BYTES: u64 = 256 * 1024;
-const CONVERSATION_VAR: &str = "ANTIGRAVITY_CONVERSATION_ID";
 
 /// Identify which held Antigravity conversation started the tool process `pid`
 /// under the trusted `language_server` `host` (with `direct_child` being the
@@ -26,7 +25,7 @@ pub fn identify(
     config: &AntigravityConfig,
     table: &dyn ProcessTable,
     uid: u32,
-    pid: i32,
+    _pid: i32,
     host: ProcessInfo,
     direct_child: Option<ProcessInfo>,
 ) -> Option<String> {
@@ -48,31 +47,16 @@ pub fn identify(
         .filter(|sid| transcript_runs_command(config, sid, &command))
         .cloned()
         .collect();
-    let chosen = match matches.len() {
-        0 => return None,
-        1 => matches[0].clone(),
-        _ => {
-            // Multiple held conversations issued the exact same command string
-            // in their current turn (e.g. `agent-relay-probe agents`). Use the
-            // caller's own env tag only to break ties among witnessed matches.
-            let tagged =
-                env_conversation(table, pid).or_else(|| env_conversation(table, child.pid))?;
-            matches.into_iter().find(|sid| sid == &tagged)?
-        }
-    };
+    if matches.len() != 1 {
+        return None;
+    }
+    let chosen = matches.into_iter().next()?;
     let still_same = table.process(host.pid) == Some(host)
         && table.process(child.pid) == Some(child)
         && proof::held(config, table, host.pid, uid)
             .iter()
             .any(|sid| sid == &chosen);
     still_same.then_some(chosen)
-}
-
-fn env_conversation(table: &dyn ProcessTable, pid: i32) -> Option<String> {
-    table
-        .environment_var(pid, CONVERSATION_VAR)
-        .map(|s| s.trim().to_owned())
-        .filter(|s| is_uuid(s))
 }
 
 fn shell_command(table: &dyn ProcessTable, pid: i32) -> Option<String> {
@@ -110,12 +94,12 @@ pub(super) fn transcript_path(config: &AntigravityConfig, sid: &str) -> Option<P
     compact.is_file().then_some(compact)
 }
 
-fn transcript_runs_command(config: &AntigravityConfig, sid: &str, command: &str) -> bool {
+fn active_turn_commands(config: &AntigravityConfig, sid: &str) -> Vec<String> {
     let Some(path) = transcript_path(config, sid) else {
-        return false;
+        return Vec::new();
     };
     let Some(tail) = read_tail(&path, TAIL_BYTES) else {
-        return false;
+        return Vec::new();
     };
     // Inspect only the current turn (steps after the most recent USER_INPUT).
     let mut rows = Vec::new();
@@ -134,15 +118,37 @@ fn transcript_runs_command(config: &AntigravityConfig, sid: &str, command: &str)
                 && row["type"].as_str() == Some("USER_INPUT")
         })
         .map_or(0, |idx| idx + 1);
-    rows[turn_start..].iter().any(|row| {
-        row["type"].as_str() == Some("PLANNER_RESPONSE")
-            && row["tool_calls"].as_array().is_some_and(|calls| {
-                calls.iter().any(|call| {
-                    call["name"].as_str() == Some("run_command")
-                        && call["args"]["CommandLine"].as_str() == Some(command)
-                })
-            })
-    })
+    let mut commands = Vec::new();
+    for row in &rows[turn_start..] {
+        if row["type"].as_str() != Some("PLANNER_RESPONSE") {
+            continue;
+        }
+        if let Some(calls) = row["tool_calls"].as_array() {
+            for call in calls {
+                if call["name"].as_str() == Some("run_command") {
+                    if let Some(cmd) = call["args"]["CommandLine"].as_str() {
+                        commands.push(cmd.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    commands
+}
+
+fn transcript_runs_command(config: &AntigravityConfig, sid: &str, command: &str) -> bool {
+    active_turn_commands(config, sid)
+        .iter()
+        .any(|c| c == command)
+}
+
+/// Whether `sid`'s current turn issued a `run_command` mentioning
+/// `antigravity-hook` — used to block a sibling conversation's tool command
+/// from spoofing a lifecycle hook for another held conversation.
+pub(super) fn active_turn_runs_hook(config: &AntigravityConfig, sid: &str) -> bool {
+    active_turn_commands(config, sid)
+        .iter()
+        .any(|c| c.contains("antigravity-hook"))
 }
 
 pub(super) fn read_tail(path: &Path, limit: u64) -> Option<String> {

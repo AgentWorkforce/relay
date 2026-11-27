@@ -5,6 +5,9 @@ use serde_json::{json, Map, Value};
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// The store key and `settings.get`/`settings.set` name.
+pub const SETTING: &str = "antigravity_direct_delivery";
+
 const HOOK_KEY: &str = "agent-relay";
 const DEV_HOOK_KEY: &str = "agent-relay-dev";
 const EVENTS: &[(&str, &str, u64)] = &[
@@ -24,6 +27,7 @@ fn hook_key(config: &AntigravityConfig) -> &'static str {
 
 pub struct AntigravitySettings {
     config: AntigravityConfig,
+    lock: std::sync::Mutex<()>,
 }
 
 impl AntigravitySettings {
@@ -31,11 +35,46 @@ impl AntigravitySettings {
         config.set_helper(executable);
         Self {
             config: config.clone(),
+            lock: std::sync::Mutex::new(()),
         }
+    }
+
+    pub fn installed(&self) -> bool {
+        proof::SUPPORTED && (self.config.data_dir.is_dir() || self.enabled())
     }
 
     pub fn enabled(&self) -> bool {
         self.config.enabled()
+    }
+
+    /// Bring an already-installed managed entry up to date with the current
+    /// helper path and event timeouts without re-enabling after an explicit Off.
+    pub fn refresh(&self) -> Result<(), String> {
+        if !proof::SUPPORTED || !self.config.helper().is_absolute() {
+            return Ok(());
+        }
+        let _held = self
+            .lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let key = hook_key(&self.config);
+        let Some(Value::Object(mut root)) =
+            document(&self.config).map_err(|_| "Could not read Antigravity hooks.")?
+        else {
+            return Ok(());
+        };
+        if !root.contains_key(key) {
+            return Ok(());
+        }
+        let expected = managed_entry(&self.config, &self.config.helper());
+        if root.get(key) == Some(&expected) {
+            return Ok(());
+        }
+        root.insert(key.into(), expected);
+        let bytes = serde_json::to_vec_pretty(&Value::Object(root))
+            .map_err(|_| "Could not encode Antigravity hooks.")?;
+        crate::platform::fs::write_atomic(&self.config.hooks_file(), &bytes)
+            .map_err(|_| "Could not save Antigravity hooks.".into())
     }
 
     pub fn set_enabled(&self, enabled: bool) -> Result<(), String> {
@@ -45,6 +84,10 @@ impl AntigravitySettings {
         if enabled && !self.config.helper().is_absolute() {
             return Err("Antigravity requires an absolute managed helper path.".into());
         }
+        let _held = self
+            .lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let path = self.config.hooks_file();
         let mut root = match document(&self.config)
             .map_err(|_| "Could not read Antigravity hooks.")?
@@ -81,6 +124,40 @@ impl AntigravitySettings {
         .map_err(|_| "Could not open Antigravity config directory.")?;
         crate::platform::fs::write_atomic(&path, &bytes)
             .map_err(|_| "Could not save Antigravity hooks.".into())
+    }
+}
+
+impl crate::relay::agents::SettingsExtension for AntigravitySettings {
+    fn get(&self) -> Map<String, Value> {
+        let mut settings = Map::new();
+        if self.installed() {
+            settings.insert(SETTING.into(), Value::Bool(self.enabled()));
+        }
+        settings
+    }
+
+    fn refuse(&self, key: &str, value: &Value) -> Option<String> {
+        if key != SETTING {
+            return None;
+        }
+        if !proof::SUPPORTED {
+            return Some("Antigravity hook delivery is currently available only on macOS.".into());
+        }
+        (value.as_bool() == Some(true) && !self.installed())
+            .then(|| "Antigravity has never run on this computer.".into())
+    }
+
+    fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {
+        if key != SETTING {
+            return None;
+        }
+        if let Some(reason) = self.refuse(key, value) {
+            return Some(Err(reason));
+        }
+        let Some(enabled) = value.as_bool() else {
+            return Some(Err(format!("{SETTING} must be true or false.")));
+        };
+        Some(self.set_enabled(enabled))
     }
 }
 

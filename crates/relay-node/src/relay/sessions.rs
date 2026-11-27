@@ -156,11 +156,14 @@ pub trait SessionDirectory: Send + Sync + 'static {
     /// The trusted command-line helper for Antigravity hooks.
     fn configure_antigravity_helper(&self, _executable: std::path::PathBuf) {}
 
-    /// A peer-authenticated Antigravity lifecycle hook request.
+    /// A peer-authenticated Antigravity lifecycle hook request. `still_current`
+    /// fences workspace/identity-generation changes immediately before claiming
+    /// an inbox message.
     fn antigravity_hook(
         &self,
         _pid: i32,
         _payload: &serde_json::Value,
+        _still_current: &(dyn Fn() -> bool + Sync),
     ) -> Option<serde_json::Value> {
         None
     }

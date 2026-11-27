@@ -29,6 +29,15 @@ pub fn antigravity_hook(development: bool, event: &str) -> Result<()> {
         return Ok(());
     };
     let wait = event == "stop" && value["terminationReason"].as_str() == Some("NO_TOOL_CALL");
+    let transcript = if wait {
+        value["transcriptPath"]
+            .as_str()
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute() && p.is_file())
+            .and_then(|p| std::fs::metadata(&p).ok().map(|m| (p, m.len())))
+    } else {
+        None
+    };
     let until = std::time::Instant::now() + Duration::from_secs(if wait { 3540 } else { 0 });
     loop {
         let timeout = Duration::from_secs(match event {
@@ -44,9 +53,14 @@ pub fn antigravity_hook(development: bool, event: &str) -> Result<()> {
         if status != 200 {
             break;
         }
-        let Some(answer) = parse_answer(&bytes) else {
+        let Some(mut answer) = parse_answer(&bytes) else {
             break;
         };
+        let wait_allowed = answer
+            .as_object_mut()
+            .and_then(|o| o.remove("relayWait"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         if answer.as_object().is_some_and(|o| !o.is_empty()) {
             let mut stdout = std::io::stdout();
             stdout.write_all(serde_json::to_string(&answer)?.as_bytes())?;
@@ -54,8 +68,13 @@ pub fn antigravity_hook(development: bool, event: &str) -> Result<()> {
             stdout.flush()?;
             return Ok(());
         }
-        if !wait || std::time::Instant::now() >= until {
+        if !wait || !wait_allowed || std::time::Instant::now() >= until {
             break;
+        }
+        if let Some((ref path, start_len)) = transcript {
+            if std::fs::metadata(path).is_ok_and(|m| m.len() != start_len) {
+                break;
+            }
         }
         std::thread::sleep(Duration::from_millis(1000));
     }
@@ -68,6 +87,7 @@ pub fn antigravity_hook(development: bool, event: &str) -> Result<()> {
 struct HookInput {
     conversation_id: String,
     cwd: Option<String>,
+    transcript_path: Option<String>,
     workspace_paths: Option<Vec<String>>,
     last_user_input: Option<String>,
     termination_reason: Option<String>,
@@ -86,6 +106,12 @@ fn input<R: Read>(reader: R, event: &str) -> Option<Value> {
         fields.insert(
             "cwd".into(),
             json!(cwd.chars().take(4096).collect::<String>()),
+        );
+    }
+    if let Some(transcript_path) = hook.transcript_path {
+        fields.insert(
+            "transcriptPath".into(),
+            json!(transcript_path.chars().take(4096).collect::<String>()),
         );
     }
     if let Some(paths) = hook.workspace_paths {

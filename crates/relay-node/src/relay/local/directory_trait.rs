@@ -32,13 +32,19 @@ impl SessionDirectory for LocalSessions {
         self.config.antigravity.set_helper(executable);
     }
 
-    fn antigravity_hook(&self, pid: i32, payload: &serde_json::Value) -> Option<serde_json::Value> {
+    fn antigravity_hook(
+        &self,
+        pid: i32,
+        payload: &serde_json::Value,
+        still_current: &(dyn Fn() -> bool + Sync),
+    ) -> Option<serde_json::Value> {
         crate::relay::antigravity::hook_answer(
             &self.config.antigravity,
             &*self.table,
             self.config.uid,
             pid,
             payload,
+            still_current,
         )
     }
 

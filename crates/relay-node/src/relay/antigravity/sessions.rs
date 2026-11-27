@@ -39,33 +39,31 @@ fn read_record(config: &AntigravityConfig, sid: &str) -> io::Result<Option<Recor
     }
 }
 
-fn read_summaries(config: &AntigravityConfig) -> HashMap<String, Summary> {
+fn read_summaries(config: &AntigravityConfig) -> Option<HashMap<String, Summary>> {
     let db = config.summaries_db();
     if !db.is_file() {
-        return HashMap::new();
+        return Some(HashMap::new());
     }
-    let Ok(conn) = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
-        return HashMap::new();
-    };
+    let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     let _ = conn.busy_timeout(Duration::from_millis(500));
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT conversation_id, title, workspace_uris, parent_conversation_id FROM conversation_summaries",
-    ) else {
-        return HashMap::new();
-    };
-    let Ok(rows) = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-        ))
-    }) else {
-        return HashMap::new();
-    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT conversation_id, title, workspace_uris, parent_conversation_id FROM conversation_summaries",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .ok()?;
     let mut out = HashMap::new();
-    for row in rows.flatten() {
-        let (id, title, workspace_uris, parent) = row;
+    for row in rows {
+        let (id, title, workspace_uris, parent) = row.ok()?;
         out.insert(
             id,
             Summary {
@@ -75,29 +73,73 @@ fn read_summaries(config: &AntigravityConfig) -> HashMap<String, Summary> {
             },
         );
     }
-    out
+    Some(out)
 }
 
-fn read_summary(config: &AntigravityConfig, sid: &str) -> Option<Summary> {
+/// Returns `None` if `conversation_summaries.db` exists on disk but could not
+/// be read (fail closed so subagents are not exposed), `Some(None)` if no row
+/// exists for `sid`, or `Some(Some(summary))` if found.
+fn read_summary(config: &AntigravityConfig, sid: &str) -> Option<Option<Summary>> {
     let db = config.summaries_db();
     if !db.is_file() {
-        return None;
+        return Some(None);
     }
     let conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
     let _ = conn.busy_timeout(Duration::from_millis(500));
-    let (title, workspace_uris, parent): (String, String, String) = conn
+    let row: Option<(String, String, String)> = conn
         .query_row(
             "SELECT title, workspace_uris, parent_conversation_id FROM conversation_summaries WHERE conversation_id = ?1",
             [sid],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
-        .ok()??;
-    Some(Summary {
+        .ok()?;
+    Some(row.map(|(title, workspace_uris, parent)| Summary {
         title: non_blank(&title),
         directory: first_workspace_dir(&workspace_uris),
         is_subagent: !parent.trim().is_empty(),
-    })
+    }))
+}
+
+/// Collect child subagent conversation IDs recorded under any held parent's
+/// `<brain>/<sid>/.system_generated/subagents/*.json` directory.
+fn subagent_ids(config: &AntigravityConfig, held_sids: &[String]) -> HashSet<String> {
+    let mut children = HashSet::new();
+    for sid in held_sids {
+        if !is_uuid(sid) {
+            continue;
+        }
+        let dir = config.brain().join(sid).join(".system_generated/subagents");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten().take(256) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if entry.metadata().is_ok_and(|m| m.len() > 64 * 1024) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(val) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            if let Some(child_id) = val["conversationId"].as_str().filter(|s| is_uuid(s)) {
+                children.insert(child_id.to_owned());
+            }
+        }
+    }
+    children
+}
+
+fn fresh_record(config: &AntigravityConfig, sid: &str, runtime: ProcessInfo) -> Option<Record> {
+    read_record(config, sid)
+        .ok()
+        .flatten()
+        .filter(|rec| rec.pid == runtime.pid && rec.start == runtime.start)
 }
 
 fn non_blank(raw: &str) -> Option<String> {
@@ -161,24 +203,32 @@ pub fn discover(
     if !proof::SUPPORTED {
         return Some(Vec::new());
     }
-    let summaries = read_summaries(config);
+    let summaries = read_summaries(config)?;
     let mut seen = HashSet::new();
-    let mut sessions = Vec::new();
+    let mut held_entries = Vec::new();
     for pid in table.all_pids() {
         let Some(runtime) = proof::runtime(table, pid, uid) else {
             continue;
         };
         for sid in proof::held(config, table, runtime.pid, uid) {
-            if !seen.insert(sid.clone()) {
-                continue;
+            if seen.insert(sid.clone()) {
+                held_entries.push((runtime, sid));
             }
-            let summary = summaries.get(&sid);
-            if summary.is_some_and(|s| s.is_subagent) {
-                continue;
-            }
-            let record = read_record(config, &sid).ok().flatten();
-            sessions.push(build_row(&sid, summary, record.as_ref()));
         }
+    }
+    let held_sids: Vec<String> = held_entries.iter().map(|(_, sid)| sid.clone()).collect();
+    let children = subagent_ids(config, &held_sids);
+    let mut sessions = Vec::new();
+    for (runtime, sid) in held_entries {
+        if children.contains(&sid) {
+            continue;
+        }
+        let summary = summaries.get(&sid);
+        if summary.is_some_and(|s| s.is_subagent) {
+            continue;
+        }
+        let record = fresh_record(config, &sid, runtime);
+        sessions.push(build_row(&sid, summary, record.as_ref()));
     }
     Some(sessions)
 }
@@ -197,13 +247,18 @@ pub fn session(
     let record = read_record(config, sid).ok().flatten();
     if let Some(ref rec) = record {
         if let Some(runtime) = proof::runtime(table, rec.pid, uid) {
-            if runtime.start == rec.start
-                && proof::held(config, table, runtime.pid, uid)
-                    .iter()
-                    .any(|id| id == sid)
-            {
-                let summary = read_summary(config, sid);
-                return Some(build_row(sid, summary.as_ref(), Some(rec)));
+            if runtime.start == rec.start {
+                let held = proof::held(config, table, runtime.pid, uid);
+                if held.iter().any(|id| id == sid) {
+                    if subagent_ids(config, &held).contains(sid) {
+                        return None;
+                    }
+                    let summary = read_summary(config, sid)?;
+                    if summary.as_ref().is_some_and(|s| s.is_subagent) {
+                        return None;
+                    }
+                    return Some(build_row(sid, summary.as_ref(), Some(rec)));
+                }
             }
         }
     }
@@ -211,12 +266,19 @@ pub fn session(
         let Some(runtime) = proof::runtime(table, pid, uid) else {
             continue;
         };
-        if proof::held(config, table, runtime.pid, uid)
-            .iter()
-            .any(|id| id == sid)
-        {
-            let summary = read_summary(config, sid);
-            return Some(build_row(sid, summary.as_ref(), record.as_ref()));
+        let held = proof::held(config, table, runtime.pid, uid);
+        if held.iter().any(|id| id == sid) {
+            if subagent_ids(config, &held).contains(sid) {
+                return None;
+            }
+            let summary = read_summary(config, sid)?;
+            if summary.as_ref().is_some_and(|s| s.is_subagent) {
+                return None;
+            }
+            let fresh = record
+                .as_ref()
+                .filter(|rec| rec.pid == runtime.pid && rec.start == runtime.start);
+            return Some(build_row(sid, summary.as_ref(), fresh));
         }
     }
     None
@@ -283,12 +345,17 @@ fn observe(
 
 /// Handle a peer-authenticated Antigravity lifecycle hook request from the
 /// session socket (`POST /antigravity/hook`).
+///
+/// `still_current` fences workspace/identity-generation changes immediately
+/// before claiming an inbox message, so a claimed offer is never discarded and
+/// stranded in `InDoubt`.
 pub fn hook_answer(
     config: &AntigravityConfig,
     table: &dyn ProcessTable,
     uid: u32,
     pid: i32,
     payload: &Value,
+    still_current: &(dyn Fn() -> bool + Sync),
 ) -> Option<Value> {
     let table = table.uncached().unwrap_or(table);
     let sid = payload["conversationId"].as_str().filter(|s| is_uuid(s))?;
@@ -301,14 +368,25 @@ pub fn hook_answer(
         return None;
     }
     let runtime = proof::hook_runtime(table, pid, uid)?;
-    let holds = proof::held(config, table, runtime.pid, uid)
-        .iter()
-        .any(|id| id == sid);
-    if !holds || table.process(pid) != Some(hook) || table.process(runtime.pid) != Some(runtime) {
+    if !proof::hook_environment_ok(config, table, pid, sid) {
+        return None;
+    }
+    let held = proof::held(config, table, runtime.pid, uid);
+    if !held.iter().any(|id| id == sid) {
+        return None;
+    }
+    if held.len() > 1
+        && held
+            .iter()
+            .any(|other| super::caller::active_turn_runs_hook(config, other))
+    {
+        return None;
+    }
+    if table.process(pid) != Some(hook) || table.process(runtime.pid) != Some(runtime) {
         return None;
     }
     observe(config, sid, runtime, payload)?;
-    take_answer(config, payload, sid, event)
+    take_answer(config, payload, sid, event, still_current)
 }
 
 fn take_answer(
@@ -316,15 +394,23 @@ fn take_answer(
     payload: &Value,
     sid: &str,
     event: &str,
+    still_current: &(dyn Fn() -> bool + Sync),
 ) -> Option<Value> {
+    if !still_current() {
+        return None;
+    }
     if event == "start" {
         return Some(json!({}));
     }
     if event == "stop" && payload["terminationReason"].as_str() != Some("NO_TOOL_CALL") {
-        return Some(json!({}));
+        return Some(json!({"relayWait": false}));
     }
     let Some(binding) = payload["relayBinding"].as_str().filter(|s| !s.is_empty()) else {
-        return Some(json!({}));
+        return Some(if event == "stop" {
+            json!({"relayWait": false})
+        } else {
+            json!({})
+        });
     };
     let thread = format!("{sid}:{binding}");
     let kind = if event == "stop" {
@@ -332,6 +418,11 @@ fn take_answer(
     } else {
         crate::relay::codex::turn_hook::HookEvent::PostToolUse
     };
+    // Re-check workspace/generation immediately before claiming so we never
+    // consume an offer and then reject it upstream.
+    if !still_current() {
+        return None;
+    }
     let answer = config.inbox.answer(&thread, kind);
     if event == "stop" {
         let Some(reason) = answer["reason"].as_str().filter(|s| !s.is_empty()) else {

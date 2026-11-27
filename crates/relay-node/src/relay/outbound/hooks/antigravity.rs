@@ -46,17 +46,27 @@ impl Outbound {
             })
             .map(|sid| Target::new(SessionKind::Antigravity, sid))
             .filter(|target| self.core.has_turn_end_advisory(target));
-        let answer = tokio::task::spawn_blocking(move || directory.antigravity_hook(pid, &payload))
-            .await
-            .ok()
-            .flatten()
-            .ok_or_else(OutboundError::not_a_session)?;
-        if self.core.workspace() != workspace
-            || self.core.plugins.cloud.identity_sync_generation() != generation
-        {
+        let core = self.core.clone();
+        let expected_workspace = workspace.clone();
+        let still_current = move || {
+            core.workspace() == expected_workspace
+                && core.plugins.cloud.identity_sync_generation() == generation
+        };
+        let answer = tokio::task::spawn_blocking(move || {
+            directory.antigravity_hook(pid, &payload, &still_current)
+        })
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(OutboundError::not_a_session)?;
+        let claimed = answer.get("decision").is_some() || answer.get("injectSteps").is_some();
+        let unchanged = self.core.workspace() == workspace
+            && self.core.plugins.cloud.identity_sync_generation() == generation;
+        if !claimed && !unchanged {
             return Err(OutboundError::not_a_session());
         }
         let answer = match advisory_target
+            .filter(|_| unchanged)
             .and_then(|target| Some((self.core.take_turn_end_advisory(&target)?, target)))
         {
             Some((advisory, target)) => {
