@@ -357,3 +357,219 @@ fn startup_timeout_stops_owned_acp_child_even_when_it_ignores_stdin_eof() {
         "owned ACP child survived the host timeout"
     );
 }
+
+#[test]
+fn host_arguments_pass_build_flag_explicitly_for_dev_and_profile() {
+    let home = tempfile::tempdir().unwrap();
+    let launch = Launch {
+        harness: ID,
+        name: "worker".into(),
+        text: "hello".into(),
+        directory: home.path().to_path_buf(),
+        full_access: false,
+        message_id: "m1".into(),
+        session_id: "launch-1".into(),
+        fork: None,
+    };
+    let dev_cx = HarnessContext::local(
+        &BTreeMap::new(),
+        home.path(),
+        &home.path().join("com.agentrelay.desktop.dev"),
+    );
+    let dev_adapter = DevinAdapter::new(&dev_cx);
+    let dev_dir = runtime(&dev_adapter.config);
+    assert!(dev_dir.ends_with("spawned"));
+    let dev_args = dev_adapter.host_arguments(Path::new("/bin/devin"), &dev_dir, &launch);
+    assert!(dev_args.iter().any(|arg| arg == "--dev"), "{dev_args:?}");
+    assert!(!dev_args.iter().any(|arg| arg.starts_with("--profile")));
+    let mcp = crate::relay::harness::relay_mcp::definition(
+        Path::new("/bin/helper"),
+        "agent_relay",
+        &dev_adapter.build,
+        crate::relay::harness::relay_mcp::Harness::Devin,
+    );
+    assert_eq!(mcp["args"], json!(["devin-spawn-mcp", "--dev"]));
+
+    let prod_cx = HarnessContext::local(
+        &BTreeMap::new(),
+        home.path(),
+        &home.path().join("com.agentrelay.desktop"),
+    );
+    let prod_args =
+        DevinAdapter::new(&prod_cx).host_arguments(Path::new("/bin/devin"), &dev_dir, &launch);
+    assert!(!prod_args.iter().any(|arg| arg == "--dev"));
+    assert!(!prod_args.iter().any(|arg| arg.starts_with("--profile")));
+
+    let profile_cx = HarnessContext::local(
+        &BTreeMap::new(),
+        home.path(),
+        &home.path().join("com.agentrelay.desktop.acme"),
+    );
+    let profile_args =
+        DevinAdapter::new(&profile_cx).host_arguments(Path::new("/bin/devin"), &dev_dir, &launch);
+    assert!(!profile_args.iter().any(|arg| arg == "--dev"));
+    assert!(profile_args.iter().any(|arg| arg == "--profile=acme"));
+}
+
+#[test]
+fn dev_upgrade_recovers_delivers_and_stops_legacy_spawned_dev_worker() {
+    use std::io::{BufRead, Write};
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    let home = tempfile::tempdir().unwrap();
+    let table = Arc::new(FakeProcesses::default());
+    let dev_cx = HarnessContext::system(
+        &BTreeMap::new(),
+        home.path(),
+        &home.path().join("com.agentrelay.desktop.dev"),
+        table.clone(),
+    );
+    let prod_cx = HarnessContext::system(
+        &BTreeMap::new(),
+        home.path(),
+        &home.path().join("com.agentrelay.desktop"),
+        table.clone(),
+    );
+    let dev_adapter = DevinAdapter::new(&dev_cx);
+    let prod_adapter = DevinAdapter::new(&prod_cx);
+
+    let legacy_dir = legacy_dev_runtime(&dev_adapter.config);
+    crate::relay::paths::socket_directory(&legacy_dir).unwrap();
+    let cli = home.path().join("devin");
+    std::fs::write(&cli, "").unwrap();
+    let launch_id = crate::relay::store::random_uuid();
+    let pid = std::process::id() as i32;
+    let child_pid = pid.saturating_add(100_000);
+    let env = std::collections::HashMap::from([(MARKER.into(), launch_id.clone())]);
+    table.insert(
+        pid,
+        FakeProcess {
+            uid: crate::relay::peer::current_uid(),
+            start: 1,
+            environment: env.clone(),
+            ..Default::default()
+        },
+    );
+    table.insert(
+        child_pid,
+        FakeProcess {
+            uid: crate::relay::peer::current_uid(),
+            parent: pid,
+            start: 2,
+            environment: env,
+            executable: Some(cli.clone()),
+            ..Default::default()
+        },
+    );
+    let sock_dir = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = sock_dir.path().join("h.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let record = Record {
+        launch_id: launch_id.clone(),
+        session_id: "legacy-session".into(),
+        host: SpawnedProcess { pid, start: 1 },
+        child: SpawnedProcess {
+            pid: child_pid,
+            start: 2,
+        },
+        socket: socket.clone(),
+        executable: cli,
+    };
+    write_record(&legacy_dir.join(format!("{launch_id}.ready.json")), &record).unwrap();
+    write_record(&legacy_dir.join("legacy-session.json"), &record).unwrap();
+
+    let intent = Intent {
+        invocation_id: "upgrade-invocation".into(),
+        gate_launch: false,
+        name: "worker".into(),
+        harness: ID,
+        approval_profile: None,
+        node_id: "test-node".into(),
+        node_name: "test-desktop".into(),
+        title: "Test".into(),
+        base_url: "https://cast.example".into(),
+        workspace_key: crate::relay::workspace::Secret::new("rk_test_synthetic"),
+        workspace_id: None,
+        machine_prefix: "test".into(),
+        message_id: "test-initial".into(),
+        session_id: launch_id,
+        created_ms: 0,
+        worker_cwd: None,
+        ended: false,
+        launch_failed: false,
+        register_sent: false,
+        agent_id: None,
+        token: None,
+        requester: None,
+        launcher: None,
+        target: None,
+        process: None,
+        control_url: None,
+    };
+    let target = Target::new(SessionKind::Devin, "legacy-session");
+
+    // Production must not touch Dev's legacy `spawned-dev` runtime.
+    assert!(prod_adapter.find(&intent).is_none());
+    assert!(!prod_adapter.alive(&target, Some(&record.host)));
+    assert_eq!(
+        deliver(
+            &dev_adapter.config,
+            table.as_ref(),
+            "legacy-session",
+            "m1",
+            "hello"
+        ),
+        None
+    );
+
+    // Development recovers the ready record, recognizes liveness, delivers, and stops it.
+    assert_eq!(
+        dev_adapter.find(&intent),
+        Some((target.clone(), Some(record.host)))
+    );
+    assert!(dev_adapter.alive(&target, Some(&record.host)));
+
+    let server_table = table.clone();
+    let server = std::thread::spawn(move || {
+        // First request: prompt delivery.
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut line)
+            .unwrap();
+        let req: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(req["op"], "prompt");
+        writeln!(stream, r#"{{"status":"delivered"}}"#).unwrap();
+        drop(stream);
+
+        // Second request: stop.
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut line)
+            .unwrap();
+        let req: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(req["op"], "stop");
+        server_table.remove(child_pid);
+        server_table.remove(pid);
+        writeln!(stream, r#"{{"status":"stopped"}}"#).unwrap();
+    });
+
+    assert_eq!(
+        deliver_with_legacy_dev(
+            &dev_adapter.config,
+            table.as_ref(),
+            "legacy-session",
+            "m1",
+            "hello",
+            true,
+        ),
+        Some(InjectOutcome::Delivered)
+    );
+    dev_adapter.stop(&target, Some(&record.host));
+    server.join().unwrap();
+    assert!(!dev_adapter.alive(&target, Some(&record.host)));
+}

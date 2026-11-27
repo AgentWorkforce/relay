@@ -465,6 +465,18 @@ pub fn send(
     message_id: &str,
     text: &str,
 ) -> InjectOutcome {
+    send_with_legacy_dev(config, table, uid, session_id, message_id, text, false)
+}
+
+pub(crate) fn send_with_legacy_dev(
+    config: &DevinConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+    session_id: &str,
+    message_id: &str,
+    text: &str,
+    legacy_dev_runtime: bool,
+) -> InjectOutcome {
     // Devin's host, pipes and hooks are Unix tools: refused on Windows.
     if let Some(reason) = platform::unsupported(DEVIN) {
         return InjectOutcome::Refused(reason);
@@ -472,9 +484,14 @@ pub fn send(
     if !is_session_id(session_id) {
         return InjectOutcome::Refused("invalid Devin session id".into());
     }
-    if let Some(outcome) =
-        crate::relay::harness::devin::deliver(config, table, session_id, message_id, text)
-    {
+    if let Some(outcome) = crate::relay::harness::devin::deliver_with_legacy_dev(
+        config,
+        table,
+        session_id,
+        message_id,
+        text,
+        legacy_dev_runtime,
+    ) {
         return outcome;
     }
     let nonce: String = message_id
@@ -1879,6 +1896,60 @@ mod tests {
             "'/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper' relay devin-hook"
         ));
         assert!(!settings.is_ours("echo relay devin-hook"));
+        // Legacy pre-upgrade `--dev` and `Agent Relay Dev Helper` commands are
+        // still recognized so turning hooks off or reinstalling cleans them up.
+        assert!(settings.is_ours("/opt/relay/agent-relay-probe devin-hook --dev"));
+        assert!(settings.is_ours(
+            "'/Applications/Agent Relay Dev.app/Contents/Helpers/Agent Relay Dev Helper' devin-hook --dev"
+        ));
+        assert!(!settings.is_ours("/opt/probe devin-hook --dev"));
+        assert!(!settings.is_ours("/opt/relay/agent-relay-probe devin-hook --dev --dev"));
+    }
+
+    #[test]
+    fn turning_off_or_reinstalling_cleans_up_legacy_dev_hooks() {
+        use crate::relay::agents::SettingsExtension;
+        let temp = tempfile::tempdir().unwrap();
+        let config = config(temp.path());
+        std::fs::create_dir_all(&config.data_dir).unwrap();
+        std::fs::create_dir_all(&config.config_dir).unwrap();
+        let legacy = "'/Applications/Agent Relay Dev.app/Contents/Helpers/Agent Relay Dev Helper' devin-hook --dev";
+        let mut hooks = serde_json::Map::new();
+        for event in HOOK_EVENTS {
+            hooks.insert(
+                (*event).into(),
+                serde_json::json!([{"hooks": [{"type": "command", "command": legacy}]}]),
+            );
+        }
+        std::fs::write(
+            config.config_file(),
+            serde_json::to_vec(&serde_json::json!({"hooks": hooks, "theme_mode": "dark"})).unwrap(),
+        )
+        .unwrap();
+        let settings = settings(&config);
+        assert_eq!(settings.get()[SETTING], true);
+        settings
+            .set(SETTING, &serde_json::json!(true))
+            .unwrap()
+            .unwrap();
+        let replaced = settings.read_object().unwrap();
+        for event in HOOK_EVENTS {
+            let entries = replaced["hooks"][event].as_array().unwrap();
+            assert_eq!(entries.len(), 1, "{event}");
+            assert_eq!(entries[0]["hooks"][0]["command"], settings.command);
+        }
+        // Turning off removes a legacy entry directly too.
+        std::fs::write(
+            config.config_file(),
+            serde_json::to_vec(&serde_json::json!({"hooks": hooks, "theme_mode": "dark"})).unwrap(),
+        )
+        .unwrap();
+        settings
+            .set(SETTING, &serde_json::json!(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(settings.get()[SETTING], false);
+        assert!(!settings.read_object().unwrap().contains_key("hooks"));
     }
 
     /// A symlink whose target is a `pipe:[N]` name, like `/proc/pid/fd`

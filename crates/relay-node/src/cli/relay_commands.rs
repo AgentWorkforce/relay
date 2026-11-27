@@ -74,9 +74,13 @@ pub enum RelayCommands {
         launch_id: String,
         #[arg(long)]
         full_access: bool,
+        /// Agent Relay Dev spawned this host; its MCP server sends through
+        /// Dev's pointer.
+        #[arg(long)]
+        dev: bool,
         /// The profile build that spawned this host; its MCP server sends
         /// through that build's pointer.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "dev")]
         profile: Option<String>,
     },
     /// Make a session-scoped request to the local relay socket.
@@ -99,8 +103,11 @@ pub enum RelayCommands {
         runtime: PathBuf,
         #[arg(long)]
         launch_id: String,
-        /// The profile build that owns this host and its MCP pointer.
+        /// Agent Relay Dev owns this host and its MCP pointer.
         #[arg(long)]
+        dev: bool,
+        /// The profile build that owns this host and its MCP pointer.
+        #[arg(long, conflicts_with = "dev")]
         profile: Option<String>,
     },
     /// Private bounded relay-send transport for a spawned Factory Droid session.
@@ -633,11 +640,12 @@ pub fn run(command: RelayCommands) -> Result<()> {
             runtime,
             launch_id,
             full_access,
+            dev,
             profile,
         } => {
-            // Which build spawned this host: its `--profile`, else Dev's
-            // runtime folder, else Agent Relay.
-            let development = profile.is_none() && runtime.ends_with("spawned-dev");
+            // Which build spawned this host: `--profile`, `--dev` (or a
+            // legacy `spawned-dev` runtime folder), else Agent Relay.
+            let development = dev || (profile.is_none() && runtime.ends_with("spawned-dev"));
             relay::harness::devin::host::run(
                 &executable,
                 &directory,
@@ -655,9 +663,10 @@ pub fn run(command: RelayCommands) -> Result<()> {
             directory,
             runtime,
             launch_id,
+            dev,
             profile,
         } => {
-            let development = profile.is_none() && runtime.ends_with("spawned-dev");
+            let development = dev || (profile.is_none() && runtime.ends_with("spawned-dev"));
             relay::harness::droid::host::run(
                 &executable,
                 &directory,

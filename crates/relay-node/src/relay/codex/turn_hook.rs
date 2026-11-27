@@ -208,7 +208,8 @@ impl TurnInbox {
             .path
             .as_deref()
             .ok_or_else(|| std::io::Error::other("no Codex hook record"))?;
-        let _lock = crate::platform::fs::lock_exclusive(&path.with_extension("lock"))?;
+        let _lock =
+            crate::platform::fs::lock_exclusive_migrating_legacy(&path.with_extension("lock"))?;
         let mut journal = match std::fs::read(path) {
             Ok(bytes) => {
                 serde_json::from_slice::<Journal>(&bytes).map_err(std::io::Error::other)?
@@ -401,7 +402,9 @@ impl TurnInbox {
             .as_ref()
             .ok_or_else(|| std::io::Error::other("no Codex hook record"))?;
         let path = record.with_extension("releases.json");
-        let _lock = crate::platform::fs::lock_exclusive(&record.with_extension("releases.lock"))?;
+        let _lock = crate::platform::fs::lock_exclusive_migrating_legacy(
+            &record.with_extension("releases.lock"),
+        )?;
         let mut releases = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
@@ -868,5 +871,40 @@ mod tests {
             Some(HookEvent::PostToolUse)
         );
         assert_eq!(HookEvent::named(Some("SessionStart")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_0644_claim_and_release_locks_migrate_in_place() {
+        use crate::platform::fs::{inode, mode_of, set_mode};
+
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join(RECORD);
+        let main_lock = record.with_extension("lock");
+        let release_lock = record.with_extension("releases.lock");
+        std::fs::write(&main_lock, b"").unwrap();
+        std::fs::write(&release_lock, b"").unwrap();
+        set_mode(&main_lock, 0o644).unwrap();
+        set_mode(&release_lock, 0o644).unwrap();
+        let main_inode = inode(&std::fs::metadata(&main_lock).unwrap());
+        let release_inode = inode(&std::fs::metadata(&release_lock).unwrap());
+
+        let (inbox, _) = inbox(dir.path());
+        assert_eq!(inbox.claimed("m1"), Claimed::Free);
+        let main_after = std::fs::metadata(&main_lock).unwrap();
+        assert_eq!(mode_of(&main_after), Some(0o600));
+        assert_eq!(inode(&main_after), main_inode);
+
+        let probe = inbox.claim_elsewhere("m1").unwrap();
+        assert_eq!(inbox.claimed("m1"), Claimed::Elsewhere);
+        assert!(inbox.release_probe("m1", &probe).unwrap());
+        assert_eq!(inbox.claimed("m1"), Claimed::Free);
+        let release_after = std::fs::metadata(&release_lock).unwrap();
+        assert_eq!(mode_of(&release_after), Some(0o600));
+        assert_eq!(inode(&release_after), release_inode);
+
+        // Group-writable lock files are still refused rather than re-permissioned.
+        set_mode(&main_lock, 0o664).unwrap();
+        assert_eq!(inbox.claimed("m1"), Claimed::Unknown);
     }
 }

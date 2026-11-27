@@ -139,13 +139,14 @@ pub(super) fn inject(
             InjectOutcome::Waiting("The Relay-owned Droid runtime is not running.".into())
         }),
         SessionKind::Devin => {
-            match devin::send(
+            match devin::send_with_legacy_dev(
                 &config.devin,
                 table,
                 config.uid,
                 &target.id,
                 message_id,
                 text,
+                config.development_build,
             ) {
                 // Nothing local holds the session: a remote source may still
                 // reach a cloud session. `None` keeps the local answer — a

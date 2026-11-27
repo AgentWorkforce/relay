@@ -1046,6 +1046,65 @@ fn hook_commands_are_recognized() {
     // The waiting `stop` entry is ours too.
     assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait"));
     assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --wait"));
+    // Legacy pre-upgrade `--dev` / `--wait --dev` / `Agent Relay Dev Helper`
+    // commands stay recognized for wait checks and cleanup.
+    assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --dev"));
+    assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --dev"));
+    assert!(settings.is_ours(
+        "'/Applications/Agent Relay Dev.app/Contents/Helpers/Agent Relay Dev Helper' cursor-hook --wait --dev"
+    ));
+    assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --wait --dev"));
+    assert!(!settings.is_ours("/opt/probe cursor-hook --wait --dev"));
+}
+
+#[test]
+fn lone_legacy_wait_dev_stop_entry_still_waits_and_can_be_cleaned_up() {
+    let (_temp, config, _table) = world();
+    let settings = settings(&config);
+    let legacy = "'/Applications/Agent Relay Dev.app/Contents/Helpers/Agent Relay Dev Helper' cursor-hook --wait --dev";
+    std::fs::write(
+        config.hooks_file(),
+        serde_json::to_vec(&json!({
+            "version": 1,
+            "hooks": {
+                "stop": [{"command": legacy, "timeout": 3600, "loop_limit": null}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        settings.waits(),
+        "pre-upgrade --wait --dev stop entry must keep waiting loops alive"
+    );
+    assert_eq!(settings.get()[SETTING], json!(true));
+    // Re-enabling replaces the legacy entry without leaving duplicates behind.
+    settings.set(SETTING, &json!(true)).unwrap().unwrap();
+    let replaced = settings.read_object().unwrap();
+    let stop_entries = replaced["hooks"]["stop"].as_array().unwrap();
+    assert_eq!(stop_entries.len(), 1);
+    assert!(
+        !stop_entries[0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--dev"),
+        "{stop_entries:?}"
+    );
+    // Turning off removes a lone legacy entry directly too.
+    std::fs::write(
+        config.hooks_file(),
+        serde_json::to_vec(&json!({
+            "version": 1,
+            "hooks": {
+                "stop": [{"command": legacy, "timeout": 3600, "loop_limit": null}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    settings.set(SETTING, &json!(false)).unwrap().unwrap();
+    assert!(!settings.waits());
+    assert!(!settings.read_object().unwrap().contains_key("hooks"));
 }
 
 /// A real Cursor CLI session, run by `scripts/test-cursor-live.sh`: stages

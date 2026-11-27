@@ -18,11 +18,16 @@ fn waiting(command: &str) -> String {
     format!("{command} {WAIT_FLAG}")
 }
 
-/// `command` without the `stop` entry's `--wait`.
+/// `command` without the `stop` entry's `--wait`. Also recognizes legacy
+/// `--wait --dev` entries written before dev hook flags were removed.
 fn without_wait(command: &str) -> (String, bool) {
     let command = command.trim();
-    match command.strip_suffix(&format!(" {WAIT_FLAG}")) {
-        Some(hook) => (hook.trim_end().to_string(), true),
+    let (hook, dev) = match command.strip_suffix(" --dev") {
+        Some(hook) => (hook.trim_end(), " --dev"),
+        None => (command, ""),
+    };
+    match hook.strip_suffix(&format!(" {WAIT_FLAG}")) {
+        Some(hook) => (format!("{}{dev}", hook.trim_end()), true),
         None => (command.to_string(), false),
     }
 }

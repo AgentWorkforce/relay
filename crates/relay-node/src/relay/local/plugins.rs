@@ -46,6 +46,7 @@ pub fn local_config(
 ) -> LocalConfig {
     let mut local = LocalConfig::from_env(env, client_home);
     if is_development(config) {
+        local.development_build = true;
         local.claude.dirs =
             crate::relay::claude_dirs::ClaudeDirs::development(&config.app_data_dir);
     }

@@ -217,6 +217,10 @@ pub fn lock_held(error: &io::Error) -> bool {
 /// (`0600`, no group or other access on Unix), creating any missing parent
 /// directories as private (`0700`) first.
 pub fn open_private_lock(path: &Path) -> io::Result<std::fs::File> {
+    open_lock(path, false)
+}
+
+fn open_lock(path: &Path, migrate_legacy_readonly: bool) -> io::Result<std::fs::File> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         create_private_dir_all(parent)?;
     }
@@ -224,14 +228,34 @@ pub fn open_private_lock(path: &Path) -> io::Result<std::fs::File> {
     options.read(true).write(true).create(true).truncate(false);
     let file = no_follow(private(&mut options)).open(path)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || !owned_by_current_user(&metadata)
-        || !private_to_owner(&metadata, 0o077)
-    {
+    if !metadata.is_file() || !owned_by_current_user(&metadata) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("lock file {} is not private", path.display()),
         ));
+    }
+    if !private_to_owner(&metadata, 0o077) {
+        // Legacy locks created under the default umask (e.g. 0644) had no
+        // group/other write bits. Tighten the opened descriptor in place so
+        // its inode stays the same for concurrent processes holding flock.
+        if !migrate_legacy_readonly || !private_to_owner(&metadata, 0o7022) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("lock file {} is not private", path.display()),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        let tightened = file.metadata()?;
+        if !private_to_owner(&tightened, 0o077) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("lock file {} is not private", path.display()),
+            ));
+        }
     }
     Ok(file)
 }
@@ -250,6 +274,16 @@ fn lock_retrying(mut acquire: impl FnMut() -> io::Result<()>) -> io::Result<()> 
 /// The lock is released when the returned `File` is dropped.
 pub fn lock_exclusive(path: &Path) -> io::Result<std::fs::File> {
     let file = open_private_lock(path)?;
+    lock_retrying(|| fs2::FileExt::lock_exclusive(&file))?;
+    Ok(file)
+}
+
+/// Acquires an exclusive advisory lock on `path`, migrating a pre-existing
+/// owner-owned regular lock file that has no group/other write bits (such as
+/// a legacy `0644` file created under umask `022`) to `0600` in place via its
+/// open descriptor so concurrent processes continue sharing the same inode.
+pub fn lock_exclusive_migrating_legacy(path: &Path) -> io::Result<std::fs::File> {
+    let file = open_lock(path, true)?;
     lock_retrying(|| fs2::FileExt::lock_exclusive(&file))?;
     Ok(file)
 }
@@ -416,6 +450,27 @@ mod tests {
             let link = dir.path().join("link.lock");
             symlink(&path, &link).unwrap();
             assert!(lock_exclusive(&link).is_err());
+
+            // Legacy migration tightens owner-only-writable 0644 files in place
+            // without replacing the inode, while rejecting group/world-writable
+            // files and symlinks.
+            let before_inode = inode(&std::fs::metadata(&loose).unwrap());
+            let migrated = lock_exclusive_migrating_legacy(&loose).unwrap();
+            let after_meta = migrated.metadata().unwrap();
+            assert_eq!(mode_of(&after_meta), Some(0o600));
+            assert_eq!(inode(&after_meta), before_inode);
+            drop(migrated);
+
+            let group_writable = dir.path().join("group_writable.lock");
+            std::fs::write(&group_writable, b"").unwrap();
+            set_mode(&group_writable, 0o664).unwrap();
+            assert_eq!(
+                lock_exclusive_migrating_legacy(&group_writable)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert!(lock_exclusive_migrating_legacy(&link).is_err());
         }
     }
 }

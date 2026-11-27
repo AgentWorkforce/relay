@@ -8,8 +8,14 @@ pub(super) fn is_ours(command: &str) -> bool {
 
 /// Whether `command` runs `subcommand` of one of our executables. Shared by
 /// managed hook files (Devin's `config.json`, Cursor's `hooks.json`).
+/// Recognizes legacy `--dev` commands and `Agent Relay Dev Helper` so cleanup
+/// and upgrades still replace or remove pre-upgrade entries.
 pub(crate) fn is_ours_running(command: &str, subcommand: &str) -> bool {
     let body = command.trim();
+    let body = body
+        .strip_suffix(" --dev")
+        .map(str::trim_end)
+        .unwrap_or(body);
     let Some(executable) = body.strip_suffix(subcommand).map(str::trim_end) else {
         return false;
     };
@@ -31,5 +37,8 @@ pub(crate) fn is_ours_running(command: &str, subcommand: &str) -> bool {
     Path::new(executable)
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("agent-relay") || name == "Agent Relay Helper")
+        .is_some_and(|name| {
+            name.starts_with("agent-relay")
+                || matches!(name, "Agent Relay Helper" | "Agent Relay Dev Helper")
+        })
 }
