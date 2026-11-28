@@ -194,11 +194,14 @@ mod tests {
         assert!(!authorized(&wrong, &BINDING, now()));
     }
 
-    fn serve(status: &'static str, body: Value) -> (String, mpsc::Receiver<String>) {
+    fn serve(
+        status: &'static str,
+        body: Value,
+    ) -> (String, mpsc::Receiver<String>, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (send, receive) = mpsc::channel();
-        std::thread::spawn(move || {
+        let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(2)))
@@ -235,12 +238,12 @@ mod tests {
             )
             .unwrap();
         });
-        (url, receive)
+        (url, receive, server)
     }
 
     #[tokio::test]
     async fn lookup_uses_recipient_token_and_exact_cloud_route() {
-        let (site_url, request) = serve("200 OK", live_response());
+        let (site_url, request, server) = serve("200 OK", live_response());
         let account = crate::relay::cloud_session::CloudAccount {
             site_url,
             workspace_id: "w1".into(),
@@ -266,40 +269,47 @@ mod tests {
         assert_eq!(body["messageId"], "m1");
         assert_eq!(body["requestId"], "r1");
         assert!(body.get("senderUserId").is_none());
+        server.join().unwrap();
     }
 
     #[tokio::test]
     async fn lookup_denial_and_wrong_binding_fail_closed() {
         let token = crate::relay::workspace::Secret::new("recipient-token");
-        let (site_url, _) = serve("403 Forbidden", live_response());
+        let (site_url, request, server) = serve("403 Forbidden", live_response());
         let account = crate::relay::cloud_session::CloudAccount {
             site_url,
             workspace_id: "w1".into(),
             user_id: Some("u1".into()),
         };
         assert!(!lookup(&account, &token, &BINDING).await);
+        request.recv().unwrap();
+        server.join().unwrap();
 
         let mut forged = live_response();
         forged["messageId"] = json!("other-message");
-        let (site_url, _) = serve("200 OK", forged);
+        let (site_url, request, server) = serve("200 OK", forged);
         let account = crate::relay::cloud_session::CloudAccount {
             site_url,
             workspace_id: "w1".into(),
             user_id: Some("u1".into()),
         };
         assert!(!lookup(&account, &token, &BINDING).await);
+        request.recv().unwrap();
+        server.join().unwrap();
         let wrong_workspace = crate::relay::cloud_session::CloudAccount {
             workspace_id: "other".into(),
             ..account
         };
         assert!(!lookup(&wrong_workspace, &token, &BINDING).await);
 
-        let (site_url, _) = serve("200 OK", live_response());
+        let (site_url, request, server) = serve("200 OK", live_response());
         let wrong_person = crate::relay::cloud_session::CloudAccount {
             site_url,
             workspace_id: "w1".into(),
             user_id: Some("other-user".into()),
         };
         assert!(!lookup(&wrong_person, &token, &BINDING).await);
+        request.recv().unwrap();
+        server.join().unwrap();
     }
 }
