@@ -9,12 +9,14 @@ const id = '12345678-1234-4234-8234-123456789abc';
 const hash = text => createHash('sha256').update(text).digest('hex');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function fixture(t, { autoJoin = false, harness = 'pi' } = {}) {
+async function fixture(t, { autoJoin = false, harness = 'pi', questionLimitMs } = {}) {
   const root = fs.mkdtempSync(join(tmpdir(), 'relay-pi-test-'));
   const runtime = join(root, 'runtime');
   const source = fs.readFileSync(new URL('./agent-relay.mjs', import.meta.url), 'utf8')
     .replace('__RUNTIME__', JSON.stringify(runtime))
-    .replace('__HARNESS__', JSON.stringify(harness));
+    .replace('__HARNESS__', JSON.stringify(harness))
+    .replace('const QUESTION_LIMIT_MS = 23000;',
+      `const QUESTION_LIMIT_MS = ${questionLimitMs ?? 23000};`);
   const path = join(root, 'extension.mjs');
   fs.writeFileSync(path, source);
   if (autoJoin) fs.writeFileSync(join(root, 'pi-auto-join'), 'on\n');
@@ -295,4 +297,122 @@ test('native uncertain submission is not replayed or matched to another delivery
   f.handlers.get('agent_end')();
   assert.equal(f.sent.length, 1, 'new runtime never migrates an old uncertain claim');
   assert.equal(f.record().state, 'claimed');
+});
+
+// Question escalation: fake cores on unix sockets named by the pointers.
+import { createServer } from 'node:http';
+
+const questionEvent = name => JSON.parse(fs.readFileSync(new URL(
+  `../fixtures/questions/${name}`, import.meta.url), 'utf8')).event;
+
+async function core(t, root, name, answer) {
+  const socket = join(root, `${name}.sock`);
+  const seen = [];
+  const server = createServer((req, res) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      seen.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      answer(res);
+    });
+  });
+  await new Promise(resolve => server.listen(socket, resolve));
+  t.after(() => server.close());
+  fs.writeFileSync(join(root, name), `${socket}\n`);
+  return seen;
+}
+
+const escalated = res => { res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, data: { escalated: true, ref: 'q1', inbox: 'triage', reason: 'Sent to @triage as q1.' } })); };
+const unknownSession = res => { res.writeHead(404, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ ok: false, error: { code: 'question_session_unknown' } })); };
+
+test("omp's ask goes to the core that has the session; the first that does not is passed", async t => {
+  const f = await fixture(t, { harness: 'omp' });
+  const first = await core(t, f.root, 'relay-socket', unknownSession);
+  const second = await core(t, f.root, 'relay-socket.dev', escalated);
+  const event = questionEvent('omp-18.12.6-tool-call-ask.json');
+  const result = await f.handlers.get('tool_call')(event, f.ctx);
+  assert.deepEqual(result, { block: true, reason: 'Sent to @triage as q1.' });
+  assert.equal(first.length, 1);
+  assert.equal(second.length, 1, 'one question sent');
+  assert.equal(second[0].tool_name, 'ask');
+  // Each core is told the time left of the extension's own bound.
+  assert.ok(second[0].budget_ms > 0 && second[0].budget_ms <= 23000, String(second[0].budget_ms));
+  assert.ok(second[0].budget_ms <= first[0].budget_ms, 'the second core gets what is left');
+  assert.equal(second[0].session_id, id);
+  assert.deepEqual(second[0].tool_input, event.input);
+});
+
+test("Pi's question tool passes a dead socket and reaches the next core", async t => {
+  const f = await fixture(t);
+  fs.writeFileSync(join(f.root, 'relay-socket'), `${join(f.root, 'gone.sock')}\n`);
+  const second = await core(t, f.root, 'relay-socket.dev', escalated);
+  const event = questionEvent('pi-1.2.0-tool-call-question.json');
+  assert.deepEqual(await f.handlers.get('tool_call')(event, f.ctx),
+    { block: true, reason: 'Sent to @triage as q1.' });
+  assert.equal(second.length, 1);
+});
+
+test('a core that does not answer in time leaves the question to the session, and no other is asked', async t => {
+  const f = await fixture(t, { harness: 'omp', questionLimitMs: 300 });
+  const slow = await core(t, f.root, 'relay-socket', () => {});
+  const other = await core(t, f.root, 'relay-socket.dev', escalated);
+  const started = Date.now();
+  const result = await f.handlers.get('tool_call')(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx);
+  assert.equal(result, undefined, 'the tool runs');
+  assert.ok(Date.now() - started < 2000, 'bounded');
+  assert.equal(slow.length, 1);
+  assert.equal(other.length, 0, 'never a second question after an unknown outcome');
+});
+
+test('other tools, no core, and any answer but escalated let the tool run, and nothing throws', async t => {
+  const f = await fixture(t, { harness: 'omp' });
+  const tool = f.handlers.get('tool_call');
+  assert.equal(await tool({ toolName: 'bash', input: { command: 'ls' } }, f.ctx), undefined);
+  assert.equal(await tool({ toolName: 'question', input: {} }, f.ctx), undefined, "Pi's tool name in omp");
+  assert.equal(await tool(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx), undefined, 'no pointer');
+  await core(t, f.root, 'relay-socket', res => { res.writeHead(200); res.end('not json'); });
+  assert.equal(await tool(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx), undefined);
+  fs.rmSync(join(f.root, 'relay-socket'));
+  await core(t, f.root, 'relay-socket.dev', res => { res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, data: { escalated: false } })); });
+  assert.equal(await tool(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx), undefined);
+  assert.equal(await tool(null, f.ctx), undefined);
+});
+
+test('a core that took the request ends it, whatever it answered: the next core is never asked', async t => {
+  for (const data of [{ escalated: false }, { escalated: false, error: 'the question may not have reached @triage' },
+    { escalated: false, reason: 'the question was not sent within 20s' }, { escalated: true, reason: '  ' }]) {
+    const f = await fixture(t, { harness: 'omp' });
+    const first = await core(t, f.root, 'relay-socket', res => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, data }));
+    });
+    const second = await core(t, f.root, 'relay-socket.dev', escalated);
+    const result = await f.handlers.get('tool_call')(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx);
+    assert.equal(result, undefined, JSON.stringify(data));
+    assert.equal(first.length, 1);
+    assert.equal(second.length, 0, `never sent again: ${JSON.stringify(data)}`);
+  }
+});
+
+test('a second ask on the same core is written, not refused, even when its answer is slow', async t => {
+  const f = await fixture(t, { harness: 'omp', questionLimitMs: 6000 });
+  let calls = 0;
+  const first = await core(t, f.root, 'relay-socket', res => {
+    calls += 1;
+    if (calls === 1) return unknownSession(res);
+    setTimeout(() => escalated(res), 2000);
+  });
+  const second = await core(t, f.root, 'relay-socket.dev', escalated);
+  const tool = f.handlers.get('tool_call');
+  // The first ask passes on to the second core; the second ask is slow.
+  assert.deepEqual(await tool(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx),
+    { block: true, reason: 'Sent to @triage as q1.' });
+  const before = second.length;
+  assert.deepEqual(await tool(questionEvent('omp-18.12.6-tool-call-ask.json'), f.ctx),
+    { block: true, reason: 'Sent to @triage as q1.' });
+  assert.equal(first.length, 2);
+  assert.equal(second.length, before, 'the next core is not asked');
 });

@@ -367,6 +367,25 @@ pub trait Injector: Send + Sync + 'static {
         self.final_answer(&registration.target, message_ref)
     }
 
+    /// The questions OpenCode's question tool is waiting on in a managed
+    /// OpenCode session's own server (`opencode_existing::pending_questions`);
+    /// `None` for any other session, or when the server cannot be proven or
+    /// read.
+    fn opencode_questions(&self, _registration: &Registration) -> Option<Vec<serde_json::Value>> {
+        None
+    }
+
+    /// Answers a managed OpenCode session's pending question once, through
+    /// its own server (`opencode_existing::reply_question`).
+    fn opencode_reply(
+        &self,
+        _registration: &Registration,
+        _request_id: &str,
+        _answers: &serde_json::Value,
+    ) -> crate::relay::opencode_existing::ReplyOutcome {
+        crate::relay::opencode_existing::ReplyOutcome::Unavailable
+    }
+
     /// The last `max` bytes of a terminal Claude Code session's transcript,
     /// for the inbox check (`claude::inbox`). `None` for any other session,
     /// or a transcript that is missing or unreadable.

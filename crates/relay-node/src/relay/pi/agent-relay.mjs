@@ -1,7 +1,8 @@
-// AGENT_RELAY_PI_EXTENSION=2
+// AGENT_RELAY_PI_EXTENSION=3
 // No Pi package imports: works with both package names, older extension APIs,
 // and omp (oh-my-pi), which shares this API.
 import * as fs from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 
@@ -91,6 +92,90 @@ function inbox(state) {
     return (aSequenced ? a.record.sequence - b.record.sequence : a.modified - b.modified) ||
       a.name.localeCompare(b.name);
   });
+}
+
+// Question escalation (`relay::question`): the harness's own ask tool (omp's
+// `ask`, Pi's example `question`) is handed to the Agent Relay core that has
+// this session on the relay, over that core's session socket, read from the
+// build pointers beside this extension's runtime (production, then dev). The
+// file names no build: every build writes it the same. Every failure lets the
+// tool run and ask in the session; at most one question is ever sent.
+const QUESTION_TOOLS = { pi: 'question', omp: 'ask' };
+const QUESTION_POINTERS = ['relay-socket', 'relay-socket.dev'];
+// omp blocks a tool_call handler past 30 s: the whole handover fits well
+// inside it, past the core's own 20 s send limit.
+const QUESTION_LIMIT_MS = 23000;
+const QUESTION_CONNECT_MS = 1500;
+
+function pointedSocket(name) {
+  try {
+    const text = fs.readFileSync(join(runtime, '..', name), 'utf8').trim();
+    return text.startsWith('/') && !text.includes('\0') ? text : undefined;
+  } catch { return undefined; }
+}
+
+// The errors of a connection that never opened, so no request reached a
+// core: Node's codes, and Bun 1.3's own for a socket it could not open.
+const NEVER_CONNECTED = new Set(['ENOENT', 'ECONNREFUSED', 'ENOTSOCK', 'EACCES', 'FailedToOpenSocket']);
+
+// One POST /claude/question to `socket`. Resolves { answer } with the core's
+// answer, { refused: true } when no request reached it (no socket, refused
+// connection), or { unknown: true } once a request was written and no full
+// answer came back in time: then the outcome is unknown and nothing else is
+// tried.
+function askCore(socket, body, deadline) {
+  return new Promise(resolve => {
+    let done = false;
+    let written = false;
+    const finish = value => { if (!done) { done = true; clearTimeout(connectTimer); clearTimeout(totalTimer); resolve(value); } };
+    // One connection per ask: a kept-alive one would never report its connect.
+    const req = httpRequest({ socketPath: socket, path: '/claude/question', method: 'POST', agent: false,
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, res => {
+      const chunks = [];
+      let size = 0;
+      res.on('data', chunk => { size += chunk.length; if (size > 65536) { req.destroy(); finish({ unknown: true }); } else chunks.push(chunk); });
+      res.on('end', () => {
+        try { finish({ answer: { status: res.statusCode, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) } }); }
+        catch { finish({ answer: { status: res.statusCode, body: null } }); }
+      });
+      res.on('error', () => finish({ unknown: true }));
+    });
+    const connectTimer = setTimeout(() => { if (!written) { req.destroy(); finish({ refused: true }); } }, QUESTION_CONNECT_MS);
+    const totalTimer = setTimeout(() => { req.destroy(); finish(written ? { unknown: true } : { refused: true }); },
+      Math.max(0, deadline - Date.now()));
+    // Written once it is on its way: Node reports the connect; Bun 1.3 does
+    // not, and reports the request finished as soon as it is queued, even
+    // for a socket that is gone. The error then says which it was.
+    req.on('socket', sock => sock.on('connect', () => { written = true; }));
+    req.on('finish', () => { written = true; });
+    req.on('error', error => finish(!NEVER_CONNECTED.has(error?.code) && written ? { unknown: true } : { refused: true }));
+    req.end(body);
+  });
+}
+
+// The reason to block the tool with when a core took the question; otherwise
+// undefined, and the tool runs.
+async function escalateQuestion(sessionId, cwd, toolName, input) {
+  const deadline = Date.now() + QUESTION_LIMIT_MS;
+  for (const name of QUESTION_POINTERS) {
+    const socket = pointedSocket(name);
+    if (!socket || Date.now() >= deadline) continue;
+    // The core sends only while a full send fits in the time left here.
+    const body = JSON.stringify({ hook_event_name: 'PreToolUse', session_id: sessionId,
+      tool_name: toolName, tool_input: input, cwd, budget_ms: Math.max(0, deadline - Date.now() - 500) });
+    const result = await askCore(socket, body, deadline);
+    if (result.unknown) return undefined;
+    if (result.refused) continue;
+    // Only a core that does not have this session (403, 404) passes the ask
+    // on. Any other answer ends it: the core took the request, and its send
+    // may have gone out even when it answers escalated:false.
+    if (result.answer.status === 403 || result.answer.status === 404) continue;
+    const data = result.answer.body?.data;
+    if (result.answer.status === 200 && data?.escalated === true &&
+        typeof data.reason === 'string' && data.reason.trim()) return data.reason;
+    return undefined;
+  }
+  return undefined;
 }
 
 export default function (pi) {
@@ -234,4 +319,13 @@ export default function (pi) {
   pi.on('message_end', () => pump());
   pi.on('agent_end', () => pump());
   pi.on('session_shutdown', stop);
+  // A handler that throws blocks the tool in Pi, so this one never throws.
+  pi.on('tool_call', async event => {
+    try {
+      if (!active || event?.toolName !== QUESTION_TOOLS[harness] ||
+          !event.input || typeof event.input !== 'object') return undefined;
+      const reason = await escalateQuestion(active.id, active.ctx?.cwd, event.toolName, event.input);
+      return reason ? { block: true, reason } : undefined;
+    } catch { return undefined; }
+  });
 }

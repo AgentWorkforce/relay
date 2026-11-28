@@ -81,6 +81,21 @@ pub enum Failure {
     JournalUnavailable,
 }
 
+/// What answering an OpenCode question came to (`reply_question`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplyOutcome {
+    /// OpenCode took the answer.
+    Taken,
+    /// OpenCode no longer waits on it: answered or dismissed in the session.
+    NoLongerPending,
+    /// The reply went out and no full answer came back: it may have landed.
+    Unknown,
+    /// OpenCode refused it; it is still waiting in the session.
+    Refused,
+    /// Nothing was sent: the server could not be proven or reached.
+    Unavailable,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Completed { receipt_id: String },
@@ -1042,6 +1057,122 @@ impl OpenCodeInjector {
             return Err(Outcome::Refused(Failure::SessionMismatch));
         }
         Ok((auth, base))
+    }
+
+    /// The binding's route, proven as delivery proves it (the exact server
+    /// process, its credentials, and the session's identity): its
+    /// `Authorization` header and base URL.
+    fn bound_route(&self, binding: &Binding) -> Result<(String, String), Failure> {
+        let auth = route_authorization(&*self.table, binding)?;
+        let base = binding.endpoint.trim_end_matches('/').to_string();
+        let response = self
+            .http
+            .request(
+                "GET",
+                &format!("{base}/session/{}", binding.session_id),
+                &auth,
+                &binding.directory,
+                None,
+                Duration::from_secs(5),
+            )
+            .ok_or(Failure::EndpointUnavailable)?;
+        if response.status == 401 || response.status == 403 {
+            return Err(Failure::AuthenticationRefused);
+        }
+        if response.status != 200 || !session_matches(&response.body, binding) {
+            return Err(Failure::SessionMismatch);
+        }
+        Ok((auth, base))
+    }
+
+    /// The questions OpenCode's question tool is waiting on in the bound
+    /// session (`GET /question`, OpenCode 1.18): each `{id, sessionID,
+    /// questions, tool?}`, only this session's. Only a server the binding
+    /// still proves is asked.
+    pub fn pending_questions(&self, binding: &Binding) -> Result<Vec<Value>, Failure> {
+        if binding.endpoint.starts_with("unix:") {
+            // The plugin socket answers delivery's requests only.
+            return Err(Failure::InvalidBinding);
+        }
+        let (auth, base) = self.bound_route(binding)?;
+        let response = self
+            .http
+            .request(
+                "GET",
+                &format!("{base}/question"),
+                &auth,
+                &binding.directory,
+                None,
+                Duration::from_secs(5),
+            )
+            .ok_or(Failure::EndpointUnavailable)?;
+        if response.status != 200 || response.body.len() > MAX_BODY {
+            return Err(Failure::EndpointUnavailable);
+        }
+        let listed: Value =
+            serde_json::from_slice(&response.body).map_err(|_| Failure::EndpointUnavailable)?;
+        Ok(listed
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|request| {
+                request["sessionID"].as_str() == Some(binding.session_id.as_str())
+                    && request["id"].as_str().is_some_and(|id| printable(id, 256))
+            })
+            .cloned()
+            .collect())
+    }
+
+    /// Answers the bound session's question `request_id` with `answers` (one
+    /// list of labels per question), once: `POST /question/{id}/reply`. No
+    /// outcome is retried.
+    pub fn reply_question(
+        &self,
+        binding: &Binding,
+        request_id: &str,
+        answers: &Value,
+    ) -> ReplyOutcome {
+        if binding.endpoint.starts_with("unix:")
+            || !printable(request_id, 256)
+            || !request_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            || !answers.is_array()
+        {
+            return ReplyOutcome::Unavailable;
+        }
+        let Ok((auth, base)) = self.bound_route(binding) else {
+            return ReplyOutcome::Unavailable;
+        };
+        // Only a question of this session that is still waiting is answered.
+        let Ok(pending) = self.pending_questions(binding) else {
+            return ReplyOutcome::Unavailable;
+        };
+        if !pending
+            .iter()
+            .any(|request| request["id"].as_str() == Some(request_id))
+        {
+            return ReplyOutcome::NoLongerPending;
+        }
+        let Ok(body) = serde_json::to_vec(&json!({"answers": answers})) else {
+            return ReplyOutcome::Unavailable;
+        };
+        let response = self.http.request(
+            "POST",
+            &format!("{base}/question/{request_id}/reply"),
+            &auth,
+            &binding.directory,
+            Some(&body),
+            Duration::from_secs(10),
+        );
+        match response {
+            // No full answer to a request that went out: it may have landed.
+            None => ReplyOutcome::Unknown,
+            Some(response) if response.status == 200 => ReplyOutcome::Taken,
+            // OpenCode answers a question it no longer waits on with 404.
+            Some(response) if response.status == 404 => ReplyOutcome::NoLongerPending,
+            Some(_) => ReplyOutcome::Refused,
+        }
     }
 
     /// Reads the completed answer for the exact Relay message reference.
@@ -2391,6 +2522,136 @@ mod tests {
         // The receipt is replayed from the journal; OpenCode is not asked again.
         assert_eq!(injector.inject(&request), completed);
         assert_eq!(server.posts.load(Ordering::SeqCst), 1);
+    }
+
+    fn question_list() -> Vec<u8> {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "fixtures/questions/opencode-1.18.31-question-list.json"
+        ))
+        .unwrap();
+        serde_json::to_vec(&fixture["list"]).unwrap()
+    }
+
+    /// The bound session's pending questions, from a server the binding
+    /// still proves; another session's are left out.
+    #[test]
+    fn pending_questions_are_the_bound_sessions_own() {
+        let temp = tempfile::tempdir().unwrap();
+        let http = Arc::new(FakeHttp::default());
+        http.push(200, session());
+        http.push(200, question_list());
+        let injector = injector(&temp.path().join("journal"), table(), http.clone());
+        let pending = injector.pending_questions(&binding()).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["id"], "que_exact");
+        let calls = http.calls.lock().unwrap();
+        assert!(calls[1].1.ends_with("/question"), "{:?}", calls[1]);
+        drop(calls);
+        // Another session behind the binding, or a server that is gone.
+        http.push(200, br#"{"id":"ses_wrong"}"#.to_vec());
+        assert_eq!(
+            injector.pending_questions(&binding()),
+            Err(Failure::SessionMismatch)
+        );
+        http.responses.lock().unwrap().push_back(None);
+        assert_eq!(
+            injector.pending_questions(&binding()),
+            Err(Failure::EndpointUnavailable)
+        );
+        let mut plugin = binding();
+        plugin.endpoint = "unix:/run/x/42.sock".into();
+        assert_eq!(
+            injector.pending_questions(&plugin),
+            Err(Failure::InvalidBinding)
+        );
+    }
+
+    /// A reply goes once to the exact pending question of the bound
+    /// session; one that is no longer pending, or refused, is not retried.
+    #[test]
+    fn a_reply_goes_once_to_the_exact_pending_question() {
+        let temp = tempfile::tempdir().unwrap();
+        let http = Arc::new(FakeHttp::default());
+        let injector = injector(&temp.path().join("journal"), table(), http.clone());
+        let answers = json!([["pnpm"]]);
+        for _ in 0..2 {
+            http.push(200, session());
+        }
+        http.push(200, question_list());
+        http.push(200, b"true".to_vec());
+        assert_eq!(
+            injector.reply_question(&binding(), "que_exact", &answers),
+            ReplyOutcome::Taken
+        );
+        let post = http.calls.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(post.0, "POST");
+        assert!(post.1.ends_with("/question/que_exact/reply"), "{post:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&post.3).unwrap(),
+            json!({"answers": [["pnpm"]]})
+        );
+        // Answered or dismissed in the session meanwhile: nothing is posted.
+        let before = http.calls.lock().unwrap().len();
+        for _ in 0..2 {
+            http.push(200, session());
+        }
+        http.push(200, b"[]".to_vec());
+        assert_eq!(
+            injector.reply_question(&binding(), "que_exact", &answers),
+            ReplyOutcome::NoLongerPending
+        );
+        assert!(http.calls.lock().unwrap()[before..]
+            .iter()
+            .all(|call| call.0 == "GET"));
+        // Another session's question, or an id that is not one.
+        for _ in 0..2 {
+            http.push(200, session());
+        }
+        http.push(200, question_list());
+        assert_eq!(
+            injector.reply_question(&binding(), "que_other_session", &answers),
+            ReplyOutcome::NoLongerPending
+        );
+        assert_eq!(
+            injector.reply_question(&binding(), "../session", &answers),
+            ReplyOutcome::Unavailable
+        );
+        // Refused by OpenCode: one attempt.
+        for _ in 0..2 {
+            http.push(200, session());
+        }
+        http.push(200, question_list());
+        http.push(500, Vec::new());
+        assert_eq!(
+            injector.reply_question(&binding(), "que_exact", &answers),
+            ReplyOutcome::Refused
+        );
+        // Gone after the reply was posted: OpenCode no longer waits on it.
+        for _ in 0..2 {
+            http.push(200, session());
+        }
+        http.push(200, question_list());
+        http.push(404, Vec::new());
+        assert_eq!(
+            injector.reply_question(&binding(), "que_exact", &answers),
+            ReplyOutcome::NoLongerPending
+        );
+        // Posted, and no full answer came back: it may have landed.
+        for _ in 0..2 {
+            http.push(200, session());
+        }
+        http.push(200, question_list());
+        http.responses.lock().unwrap().push_back(None);
+        assert_eq!(
+            injector.reply_question(&binding(), "que_exact", &answers),
+            ReplyOutcome::Unknown
+        );
+        // The server cannot be proven: nothing is sent.
+        http.responses.lock().unwrap().push_back(None);
+        assert_eq!(
+            injector.reply_question(&binding(), "que_exact", &answers),
+            ReplyOutcome::Unavailable
+        );
     }
 
     #[test]

@@ -107,7 +107,11 @@ impl Core {
 
     /// Whether an organization hold that began after this delivery was
     /// admitted now holds it.
-    fn organization_now_holds(&self, registration: &Registration, delivery: &Delivery) -> bool {
+    pub(crate) fn organization_now_holds(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+    ) -> bool {
         self.claude_delivery.organization_holds()
             && matches!(
                 self.claude_delivery.decide(registration, delivery),
