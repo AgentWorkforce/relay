@@ -254,6 +254,9 @@ impl Outbound {
         match (sent, endpoint) {
             (Ok(sent), _) => Ok(sent),
             (Err(error), Some(endpoint)) if unresolved_recipient(&error) => {
+                // Refused for certain: should explaining it run out of time,
+                // the send still reports this refusal (`send_trace`).
+                crate::relay::outbound::send_trace::refused(&OutboundError::relaycast(&error));
                 Err(self.unresolved(registration, endpoint, &error).await)
             }
             (Err(error), _) => Err(OutboundError::relaycast(&error)),

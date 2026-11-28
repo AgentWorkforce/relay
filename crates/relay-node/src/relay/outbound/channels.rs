@@ -170,8 +170,24 @@ impl Outbound {
     }
 
     /// `POST /send`: a channel thread reply when both `channel` and
-    /// `thread_id` are named, otherwise [`Outbound::send`].
+    /// `thread_id` are named, otherwise [`Outbound::send`]. Each one is
+    /// logged and has a deadline (`send_trace`, #2289).
     pub(super) async fn send_route(
+        &self,
+        pid: i32,
+        uid: u32,
+        request: &Request,
+    ) -> Result<Value, OutboundError> {
+        let key = request.header("idempotency-key");
+        super::send_trace::Trace::start(key)
+            .run(
+                super::send_trace::DEADLINE,
+                self.traced_send(pid, uid, request),
+            )
+            .await
+    }
+
+    async fn traced_send(
         &self,
         pid: i32,
         uid: u32,
@@ -212,6 +228,7 @@ impl Outbound {
         key: Option<String>,
     ) -> Result<Value, OutboundError> {
         let (channel, thread, text) = thread_reply_fields(fields)?;
+        super::send_trace::recipient(&format!("#{channel}"));
         let (session, registration, token) = self.authorize_sender(pid, uid).await?;
         let route = thread_route(&channel, &thread);
         if !self.core.reply_parents(&registration.name).contains(&route) {
@@ -222,9 +239,10 @@ impl Outbound {
             ));
         }
         self.admit(&session.target.key())?;
-        let sent = client::reply(&registration.base_url, &token, &thread, &text, key)
-            .await
-            .map_err(|error| OutboundError::relaycast(&error))?;
+        super::send_trace::mark(super::send_trace::Stage::Writing);
+        let sent = client::reply(&registration.base_url, &token, &thread, &text, key).await;
+        super::send_trace::mark(super::send_trace::Stage::Receipt);
+        let sent = sent.map_err(|error| OutboundError::relaycast(&error))?;
         Ok(json!({
             "from": registration.name,
             "channel": channel,
