@@ -61,7 +61,7 @@ libc = "0.2"
 md-5 = "0.10"
 same-file = "1"
 shell-words = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 relaycast = { git = "https://github.com/AgentWorkforce/relaycast.git", rev = "a7433eb24ab42d1106bf6a52edb956051a370cc5" }
 # Same HTTP/TLS stack as the SDK; its client is supplied our shared OS trust.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
@@ -125,5 +125,5 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 [dev-dependencies]
 # Tests read and write the agent CLIs' TOML config files.
 toml_edit = "0.25"
-rusqlite = { version = "0.32", features = ["hooks"] }
+rusqlite = { version = "0.41", features = ["hooks"] }
 tokio = { version = "1", features = ["test-util"] }
