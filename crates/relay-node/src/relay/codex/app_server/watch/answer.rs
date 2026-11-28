@@ -10,8 +10,12 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 const MAX_ACTIVE: usize = 32;
+const MAX_ITEMS_PER_TURN: usize = 64;
 const MAX_BACKLOG: usize = 512;
-const MAX_DELTA_BYTES: usize = 8 * 1024;
+// Cloud's proposed voice event contract accepts at most 4096 UTF-16 units of
+// text per delta. Splitting here avoids an advisory gap at that boundary.
+const MAX_EVENT_UNITS: usize = 4096;
+const MAX_EVENT_BYTES: usize = 4096;
 const MAX_ANSWER_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,6 +131,12 @@ impl AnswerTap {
                         Some("partial_answer" | "final_answer")
                     )
                 {
+                    if active.allowed_items.len() >= MAX_ITEMS_PER_TURN {
+                        // A turn that never reports item completion cannot
+                        // grow its retained ID set without bound.
+                        self.active.remove(&key);
+                        return;
+                    }
                     active.allowed_items.insert(item_id.into());
                 }
             }
@@ -150,26 +160,27 @@ impl AnswerTap {
                 let Some(text) = params["delta"].as_str().filter(|text| !text.is_empty()) else {
                     return;
                 };
-                let bytes = text.len();
-                if bytes > MAX_DELTA_BYTES
-                    || active.bytes.saturating_add(bytes) > MAX_ANSWER_BYTES
-                    || self.backlog.len() >= MAX_BACKLOG
+                let chunks = split_utf16(text);
+                if active.bytes.saturating_add(text.len()) > MAX_ANSWER_BYTES
+                    || self.backlog.len().saturating_add(chunks.len()) > MAX_BACKLOG
                 {
                     // Stop advisory streaming on overflow; the durable DM
                     // remains the only complete answer source.
                     self.active.remove(&key);
                     return;
                 }
-                active.bytes += bytes;
-                active.seq += 1;
-                self.backlog.push_back(AnswerDelta {
-                    thread_id: key.0,
-                    turn_id: key.1,
-                    message_id: active.message_id.clone(),
-                    request_id: active.request_id.clone(),
-                    seq: active.seq,
-                    text: text.into(),
-                });
+                active.bytes += text.len();
+                for chunk in chunks {
+                    active.seq += 1;
+                    self.backlog.push_back(AnswerDelta {
+                        thread_id: key.0.clone(),
+                        turn_id: key.1.clone(),
+                        message_id: active.message_id.clone(),
+                        request_id: active.request_id.clone(),
+                        seq: active.seq,
+                        text: chunk.into(),
+                    });
+                }
             }
             _ => {}
         }
@@ -221,6 +232,29 @@ fn plain_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+/// Split without breaking a Unicode scalar or exceeding Cloud's UTF-16-unit
+/// limit. Every event remains a contiguous piece of the source delta.
+fn split_utf16(text: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut units = 0;
+    let mut bytes = 0;
+    for (at, character) in text.char_indices() {
+        let character_units = character.len_utf16();
+        let character_bytes = character.len_utf8();
+        if units + character_units > MAX_EVENT_UNITS || bytes + character_bytes > MAX_EVENT_BYTES {
+            chunks.push(&text[start..at]);
+            start = at;
+            units = 0;
+            bytes = 0;
+        }
+        units += character_units;
+        bytes += character_bytes;
+    }
+    chunks.push(&text[start..]);
+    chunks
 }
 
 #[cfg(test)]
@@ -313,9 +347,52 @@ mod tests {
             THREAD,
             TURN,
             "answer",
-            &"x".repeat(MAX_DELTA_BYTES + 1),
+            &"x".repeat(MAX_ANSWER_BYTES + 1),
         ));
         tap.observe(&delta(THREAD, TURN, "answer", "after overflow"));
+        assert!(tap.take(THREAD, TURN, "relay-1", "voice-1").is_empty());
+    }
+
+    #[test]
+    fn large_ascii_and_emoji_deltas_fit_cloud_utf16_limit_without_loss() {
+        let mut tap = AnswerTap::default();
+        assert!(tap.arm(THREAD, TURN, "relay-1", "voice-1"));
+        tap.observe(&start(THREAD, TURN, "answer", json!("final_answer")));
+        let text = format!("{}{}", "a".repeat(6000), "🦊".repeat(1500));
+        tap.observe(&delta(THREAD, TURN, "answer", &text));
+        let events = tap.take(THREAD, TURN, "relay-1", "voice-1");
+        assert!(events.len() >= 3);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.text.as_str())
+                .collect::<String>(),
+            text
+        );
+        assert!(events
+            .iter()
+            .all(|event| event.text.encode_utf16().count() <= MAX_EVENT_UNITS
+                && event.text.len() <= MAX_EVENT_BYTES));
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            (1..=events.len() as u64).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn missing_item_completions_cannot_grow_capture_without_bound() {
+        let mut tap = AnswerTap::default();
+        assert!(tap.arm(THREAD, TURN, "relay-1", "voice-1"));
+        for index in 0..=MAX_ITEMS_PER_TURN {
+            tap.observe(&start(
+                THREAD,
+                TURN,
+                &format!("answer-{index}"),
+                json!("final_answer"),
+            ));
+        }
+        assert!(!tap.active.contains_key(&(THREAD.into(), TURN.into())));
+        tap.observe(&delta(THREAD, TURN, "answer-0", "never forward"));
         assert!(tap.take(THREAD, TURN, "relay-1", "voice-1").is_empty());
     }
 
