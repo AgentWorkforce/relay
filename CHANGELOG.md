@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Patch]
 
+### Added
+
+- `agent-relay-node`: the bridge's `messages.send` accepts an optional `files` list (absolute local paths, at most 5, each at most 25 MB) and uploads them as you before sending, so the desktop Chat page can attach screenshots and files to a direct message. Links are followed and judged by where they lead; directories and anything in Agent Relay's own data are refused, and files cannot ride on a reply. Files of a message Relaycast refuses are deleted again. Clients that omit `files` send as before.
+
 ### Fixed
 
 - `agent-relay-node`: a direct message a Claude Code session took through its mobile handoff no longer holds later direct messages to that session back. Before, the message still counted as waiting until the next queue read succeeded, so with Relaycast slow or unreachable later messages could keep waiting behind one the session had already started. This holds even when the session takes the message while Agent Relay is still ringing it. Follows up the in-order delivery in 18.17.0.

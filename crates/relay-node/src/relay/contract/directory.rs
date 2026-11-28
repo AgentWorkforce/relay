@@ -168,6 +168,17 @@ pub struct SendParams {
     pub text: String,
     /// Answers beneath this message instead.
     pub reply_to: Option<String>,
+    /// Absolute paths of local files to attach: at most 5, each a regular
+    /// file of at most 25 MB. Each is uploaded as you before the message is
+    /// sent; a file that cannot be read or uploaded sends nothing. Links are
+    /// followed and judged by where they lead; nothing in Agent Relay's own
+    /// data may be attached. Not with `reply_to`: a reply carries no files.
+    /// Omitted or empty, the message carries none. With files the call can
+    /// take minutes (each upload may take up to a minute): give it a
+    /// command's deadline, and never repeat it on a timeout, since it may
+    /// still send. Files of a message Relaycast refuses are deleted again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema, Deserialize)]

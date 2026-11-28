@@ -3912,14 +3912,25 @@ public struct RpcError: Codable, Equatable, Hashable, Sendable {
 public struct SendParams: Codable, Equatable, Hashable, Sendable {
     /// An exact `agent@machine` address.
     public let address: String?
+    /// Absolute paths of local files to attach: at most 5, each a regular
+    /// file of at most 25 MB. Each is uploaded as you before the message is
+    /// sent; a file that cannot be read or uploaded sends nothing. Links are
+    /// followed and judged by where they lead; nothing in Agent Relay's own
+    /// data may be attached. Not with `reply_to`: a reply carries no files.
+    /// Omitted or empty, the message carries none. With files the call can
+    /// take minutes (each upload may take up to a minute): give it a
+    /// command's deadline, and never repeat it on a timeout, since it may
+    /// still send. Files of a message Relaycast refuses are deleted again.
+    public let files: [String]?
     /// Answers beneath this message instead.
     public let replyTo: String?
     public let text: String
     /// A name or address; give exactly one of `to` and `address`.
     public let to: String?
 
-    public init(address: String? = nil, replyTo: String? = nil, text: String, to: String? = nil) {
+    public init(address: String? = nil, files: [String]? = nil, replyTo: String? = nil, text: String, to: String? = nil) {
         self.address = address
+        self.files = files
         self.replyTo = replyTo
         self.text = text
         self.to = to
@@ -3927,6 +3938,7 @@ public struct SendParams: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case address
+        case files
         case replyTo = "reply_to"
         case text
         case to
@@ -3935,6 +3947,7 @@ public struct SendParams: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.address = try c.decodeIfPresent(String.self, forKey: .address)
+        self.files = try c.decodeIfPresent([String].self, forKey: .files)
         self.replyTo = try c.decodeIfPresent(String.self, forKey: .replyTo)
         self.text = try c.decode(String.self, forKey: .text)
         self.to = try c.decodeIfPresent(String.self, forKey: .to)
@@ -3943,6 +3956,7 @@ public struct SendParams: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(self.address, forKey: .address)
+        try c.encodeIfPresent(self.files, forKey: .files)
         try c.encodeIfPresent(self.replyTo, forKey: .replyTo)
         try c.encode(self.text, forKey: .text)
         try c.encodeIfPresent(self.to, forKey: .to)
