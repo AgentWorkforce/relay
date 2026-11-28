@@ -1356,12 +1356,21 @@ async fn a_failed_delivery_record_keeps_its_approval_decision() {
             .any(|injected| injected.message_id == message)
     })
     .await;
+    // The injection is visible before its outcome is journalled, so wait for
+    // the journal entry rather than reading the file once.
+    let policy_path = h.home.join("app-data/claude-delivery-policy.json");
+    let read_policy = || -> Value {
+        std::fs::read(&policy_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or(Value::Null)
+    };
+    eventually("delivery outcome is journalled", || {
+        !read_policy()["consumed"][&delivery].is_null()
+    })
+    .await;
     assert_eq!(delivered(&h.fake, &delivery).as_deref(), Some("queued"));
-    let policy: Value = serde_json::from_slice(
-        &std::fs::read(h.home.join("app-data/claude-delivery-policy.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(policy["consumed"][&delivery]["kind"], "delivered");
+    assert_eq!(read_policy()["consumed"][&delivery]["kind"], "delivered");
     h.stop().await;
 }
 
