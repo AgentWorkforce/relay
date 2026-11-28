@@ -128,6 +128,9 @@
     "@relayflows/sdk": {
       "@agent-relay/sdk": "18.17.0",
       "@agent-relay/harness-driver": "17.2.1"
+    },
+    "@agent-relay/events": {
+      "@opentelemetry/exporter-trace-otlp-http": "0.223.2"
     }
   }
 }
