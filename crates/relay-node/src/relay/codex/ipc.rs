@@ -193,6 +193,18 @@ pub fn start_turn_params(
     client_message_id: &str,
     hidden: Option<&str>,
 ) -> Value {
+    start_turn_params_with_speed(thread, text, client_message_id, hidden, false)
+}
+
+/// The window owner forwards `turnStart.request` to the same Codex app-server.
+/// This option is only set after a caller verifies the exact voice delivery.
+fn start_turn_params_with_speed(
+    thread: &str,
+    text: &str,
+    client_message_id: &str,
+    hidden: Option<&str>,
+    fast: bool,
+) -> Value {
     // An empty `text` starts the turn with no visible input.
     let input = match text {
         "" => json!([]),
@@ -202,7 +214,7 @@ pub fn start_turn_params(
         Some(hidden) => json!({"responseItems": super::compact::hidden_items(hidden)}),
         None => json!({}),
     };
-    json!({
+    let mut params = json!({
         "conversationId": thread,
         "turnStart": {
             "request": {
@@ -212,7 +224,11 @@ pub fn start_turn_params(
             },
             "context": context,
         },
-    })
+    });
+    if fast {
+        params["turnStart"]["request"]["serviceTierForTurn"] = json!("fast");
+    }
+    params
 }
 
 /// The reply to a client-discovery request: this client handles nothing.
@@ -440,10 +456,35 @@ impl Session {
         owner: &str,
         hidden: Option<&str>,
     ) -> Result<Option<String>, IpcError> {
+        self.start_turn_with_speed(thread, text, message_id, owner, hidden, false)
+    }
+
+    /// Dormant until Cloud can attest a person voice request for this exact
+    /// delivered message. Never infer this from the text or Relaycast data.
+    #[allow(dead_code)]
+    pub(crate) fn start_turn_fast(
+        &mut self,
+        thread: &str,
+        text: &str,
+        message_id: &str,
+        owner: &str,
+    ) -> Result<Option<String>, IpcError> {
+        self.start_turn_with_speed(thread, text, message_id, owner, None, true)
+    }
+
+    fn start_turn_with_speed(
+        &mut self,
+        thread: &str,
+        text: &str,
+        message_id: &str,
+        owner: &str,
+        hidden: Option<&str>,
+        fast: bool,
+    ) -> Result<Option<String>, IpcError> {
         let source = self.client_id.clone();
         let started = self.request(
             Method::ThreadFollowerStartTurn,
-            start_turn_params(thread, text, message_id, hidden),
+            start_turn_params_with_speed(thread, text, message_id, hidden, fast),
             &source,
             Some(owner),
             Some(START_TURN_TIMEOUT.as_millis() as u64),
@@ -655,6 +696,22 @@ pub(crate) mod tests {
         assert_eq!(input["type"], "text");
         assert_eq!(input["text"], "hello");
         assert_eq!(input["text_elements"], json!([]));
+        assert!(turn.get("serviceTierForTurn").is_none());
+    }
+
+    #[test]
+    fn a_verified_native_voice_turn_sets_only_its_own_fast_tier() {
+        let fast = start_turn_params_with_speed("thread-1", "voice", "message-1", None, true);
+        let ordinary = start_turn_params("thread-1", "next", "message-2", None);
+        assert_eq!(fast["turnStart"]["request"]["serviceTierForTurn"], "fast");
+        assert_eq!(
+            fast["turnStart"]["request"]["clientUserMessageId"],
+            "message-1"
+        );
+        assert!(ordinary["turnStart"]["request"]
+            .get("serviceTierForTurn")
+            .is_none());
+        assert!(fast["turnStart"]["request"].get("effort").is_none());
     }
 
     // CodexIPCTests.testOwnerDiscoveryTargetsTheLocalHost.

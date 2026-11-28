@@ -14,7 +14,7 @@ the original DM cannot bind it. Before selecting Fast, the node needs a
 post-send authorization lookup from Cloud using the signed-in Desktop session
 and the recipient agent token, as it already does for owner delegation.
 
-Proposed lookup (Cloud owner is building this offline; no hosted route yet):
+Proposed lookup (Cloud has a held offline PR; no hosted route yet):
 
 ```text
 POST /api/v1/workspaces/{workspaceId}/messaging/voice-attestation
@@ -41,15 +41,31 @@ normal service. No message is dropped because Fast authorization failed.
 Replays must not start a second turn. A raw Relaycast metadata field is never
 sufficient.
 
+## Both delivery routes
+
+The registered Skip Codex thread is also driven by the layered agent's
+`headless.py` process over its shared Unix app-server. Relay can send an owner
+DM by the ordinary app-server proxy path or by native continuation through
+the exact window owner and `thread-follower-start-turn`. The live Skip
+registration has no spawn, which makes native continuation eligible, but the
+host's current claim and window-owner capability have not been verified.
+Both paths therefore stage an explicit, uncalled Fast option and keep normal
+turns unchanged. The native route places `serviceTierForTurn` in
+`turnStart.request`, which the exact window owner must forward to Codex; an
+installed-host readback must establish that it does before this route is
+enabled. The native receipt still enforces at-most-once submission and an
+exact owner window.
+
 ## Compatibility and rollout
 
-The current patch stages the app-server seam only. The Cloud route and issuance
-must pass a forged-metadata refusal test before any live caller is connected.
-Normal turns omit the Fast
-field. An explicit `-32602` invalid-params response naming
+The current patch stages both seams only. The Cloud route and issuance must
+pass a forged-metadata refusal test before any live caller is connected.
+Normal turns omit the Fast field. On the app-server proxy path, an explicit
+`-32602` invalid-params response naming
 `serviceTierForTurn` permits one retry without the field and with the same
 `clientUserMessageId`. Timeouts and ambiguous errors never retry. The fast
 path must stay uncalled until the authorized Cloud lookup and exact-binding
-tests land. Even after that, a busy Codex thread can queue the request before
-turn start; this setting alone does not solve pre-turn starvation or stream
-answer text.
+tests land. The native window path currently treats any explicit rejection
+as a refusal, without an automatic retry. Even after authorization, a busy
+Codex thread can queue the request before turn start; this setting alone does
+not solve pre-turn starvation or stream answer text.

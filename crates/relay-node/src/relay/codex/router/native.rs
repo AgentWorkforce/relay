@@ -137,7 +137,23 @@ impl CodexRouter {
         text: &str,
         admit: &(dyn Fn() -> bool + Send + Sync),
     ) -> InjectOutcome {
-        match self.native_attempt(thread, id, text, admit) {
+        match self.native_attempt(thread, id, text, admit, false) {
+            Ok(outcome) => outcome,
+            Err(error) => InjectOutcome::InDoubt(error),
+        }
+    }
+
+    /// The same native-window receipt and owner checks with a per-turn fast
+    /// tier. No production caller exists until exact Cloud attestation lands.
+    #[allow(dead_code)]
+    pub(crate) fn inject_native_existing_fast_guarded(
+        &self,
+        thread: &str,
+        id: &str,
+        text: &str,
+        admit: &(dyn Fn() -> bool + Send + Sync),
+    ) -> InjectOutcome {
+        match self.native_attempt(thread, id, text, admit, true) {
             Ok(outcome) => outcome,
             Err(error) => InjectOutcome::InDoubt(error),
         }
@@ -149,6 +165,7 @@ impl CodexRouter {
         id: &str,
         text: &str,
         admit: &(dyn Fn() -> bool + Send + Sync),
+        fast: bool,
     ) -> Result<InjectOutcome, String> {
         if !valid_input(thread, id, text) {
             return Ok(InjectOutcome::Refused(
@@ -213,7 +230,7 @@ impl CodexRouter {
             Some(true) => return Ok(InjectOutcome::Waiting(BEHIND_QUEUE.into())),
             None => return Ok(InjectOutcome::Waiting(QUEUE_UNREADABLE.into())),
         }
-        self.submit_native(&path, &key, thread, id, text, &bound, admit)
+        self.submit_native(&path, &key, thread, id, text, &bound, admit, fast)
     }
 
     fn missing_native_owner(
@@ -267,6 +284,7 @@ impl CodexRouter {
         text: &str,
         bound: &Entry,
         admit: &(dyn Fn() -> bool + Send + Sync),
+        fast: bool,
     ) -> Result<InjectOutcome, String> {
         if !admit() {
             return self.cancel_unsent_native(path, key, id);
@@ -290,7 +308,12 @@ impl CodexRouter {
             .owner
             .as_deref()
             .ok_or("The original Codex window is unknown.")?;
-        let result = self.routes.native_window(thread, text, id, owner, admit);
+        let result = if fast {
+            self.routes
+                .native_window_fast(thread, text, id, owner, admit)
+        } else {
+            self.routes.native_window(thread, text, id, owner, admit)
+        };
         let state = match result {
             Ok(true) => State::Started,
             Ok(false) | Err(TurnError::Refused(_)) => State::Refused,

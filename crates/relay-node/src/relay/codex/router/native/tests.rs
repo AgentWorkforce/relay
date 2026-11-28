@@ -4,6 +4,37 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 const THREAD: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 
 #[test]
+fn native_fast_tier_is_explicit_and_keeps_the_owner_receipt() {
+    let temp = tempfile::tempdir().unwrap();
+    let fake = Fake::new(temp.path());
+    let router = CodexRouter::new(fake.clone());
+    assert_eq!(
+        router.inject_native_existing_fast_guarded(THREAD, "voice-1", "spoken", &|| true),
+        InjectOutcome::Delivered
+    );
+    assert_eq!(
+        fake.fast_native.lock().unwrap().as_slice(),
+        &[(
+            "spoken".into(),
+            "voice-1".into(),
+            "window-generation-1".into()
+        )]
+    );
+    assert!(fake.native.lock().unwrap().is_empty());
+    assert!(router.native_choice(THREAD, "voice-1"));
+    assert_eq!(
+        router.inject_native_existing_fast_guarded(THREAD, "voice-1", "spoken", &|| true),
+        InjectOutcome::Delivered
+    );
+    assert_eq!(fake.fast_native.lock().unwrap().len(), 1);
+    assert_eq!(
+        router.inject_native_existing_guarded(THREAD, "ordinary-2", "typed", &|| true),
+        InjectOutcome::Delivered
+    );
+    assert_eq!(fake.native.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn coordination_notice_cannot_find_or_change_an_existing_native_message_choice() {
     let temp = tempfile::tempdir().unwrap();
     let fake = Fake::new(temp.path());
@@ -44,6 +75,7 @@ struct Fake {
     queued: Mutex<Option<bool>>,
     result: Mutex<Result<bool, TurnError>>,
     native: Mutex<Vec<(String, String, String)>>,
+    fast_native: Mutex<Vec<(String, String, String)>>,
     peer: AtomicUsize,
 }
 
@@ -63,6 +95,7 @@ impl Fake {
             queued: Mutex::new(Some(false)),
             result: Mutex::new(Ok(true)),
             native: Mutex::new(Vec::new()),
+            fast_native: Mutex::new(Vec::new()),
             peer: AtomicUsize::new(0),
         })
     }
@@ -93,6 +126,23 @@ impl CodexRoutes for Fake {
             return Ok(false);
         }
         self.native
+            .lock()
+            .unwrap()
+            .push((text.into(), id.into(), owner.into()));
+        self.result.lock().unwrap().clone()
+    }
+    fn native_window_fast(
+        &self,
+        _: &str,
+        text: &str,
+        id: &str,
+        owner: &str,
+        admit: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<bool, TurnError> {
+        if !admit() {
+            return Ok(false);
+        }
+        self.fast_native
             .lock()
             .unwrap()
             .push((text.into(), id.into(), owner.into()));
