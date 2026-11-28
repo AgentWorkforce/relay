@@ -179,7 +179,7 @@ pub fn plugins_with_options(
             &std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
         ),
     ));
-    // Agent Relay's Antigravity hooks in ~/.gemini/antigravity/hooks.json hand
+    // Agent Relay's Antigravity hooks in ~/.gemini/config/hooks.json hand
     // staged messages to the session at its next tool call or turn end. An
     // installed copy is brought up to date off the start path in production.
     let antigravity_settings = Arc::new(crate::relay::antigravity::AntigravitySettings::new(

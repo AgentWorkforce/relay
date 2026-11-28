@@ -2,10 +2,9 @@
 //! identification, and lifecycle-hook delivery (`~/.gemini/config/hooks.json`).
 //! Passive history acquisition remains in RelayHistory's `antigravity` provider.
 use crate::relay::codex::turn_hook::TurnInbox;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub mod caller;
 mod delivery;
@@ -26,7 +25,6 @@ pub struct AntigravityConfig {
     pub home: PathBuf,
     pub data_dir: PathBuf,
     pub config_dir: PathBuf,
-    pub development: bool,
     inbox: Arc<TurnInbox>,
     helper: Arc<RwLock<PathBuf>>,
 }
@@ -37,7 +35,6 @@ impl std::fmt::Debug for AntigravityConfig {
             .field("home", &self.home)
             .field("data_dir", &self.data_dir)
             .field("config_dir", &self.config_dir)
-            .field("development", &self.development)
             .finish()
     }
 }
@@ -50,24 +47,16 @@ impl AntigravityConfig {
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| home.join(".gemini/antigravity"));
         let config_dir = home.join(".gemini/config");
+        let state = home.join(".agentworkforce/desktop/antigravity");
         Self {
             home: home.into(),
             data_dir,
             config_dir,
-            development: false,
-            inbox: Arc::new(TurnInbox::default()),
+            inbox: Arc::new(TurnInbox::open(state.join("claims.json")).retain_claims()),
             helper: Arc::new(RwLock::new(
                 std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
             )),
         }
-        .development(false)
-    }
-
-    pub fn development(mut self, development: bool) -> Self {
-        self.development = development;
-        self.inbox = Arc::new(TurnInbox::open(self.state().join("claims.json")).retain_claims());
-        self.helper = Arc::new(RwLock::new(self.helper()));
-        self
     }
 
     pub fn conversations(&self) -> PathBuf {
@@ -87,13 +76,7 @@ impl AntigravityConfig {
     }
 
     pub fn state(&self) -> PathBuf {
-        self.home
-            .join(".agentworkforce/desktop")
-            .join(if self.development {
-                "antigravity-dev"
-            } else {
-                "antigravity"
-            })
+        self.home.join(".agentworkforce/desktop/antigravity")
     }
 
     pub fn set_helper(&self, executable: PathBuf) {
@@ -120,30 +103,6 @@ impl AntigravityConfig {
 pub(super) const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(test)]
 pub(super) const LOCK_TIMEOUT: Duration = Duration::from_millis(100);
-
-/// Acquire an exclusive advisory lock with bounded exponential backoff so a
-/// stalled peer process cannot block settings or hook state updates forever.
-pub(super) fn lock_exclusive_bounded(lock: &std::fs::File, max_wait: Duration) -> io::Result<()> {
-    let deadline = Instant::now() + max_wait;
-    let mut backoff = Duration::from_millis(5);
-    loop {
-        match fs2::FileExt::try_lock_exclusive(lock) {
-            Ok(()) => return Ok(()),
-            Err(err) if crate::platform::fs::lock_held(&err) => {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "timed out waiting for exclusive Antigravity lock",
-                    ));
-                }
-                std::thread::sleep(backoff.min(deadline - now));
-                backoff = (backoff * 2).min(Duration::from_millis(100));
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
 
 /// Aliases share their owner's hook inbox. A replaced registration is not an
 /// alias and cannot acquire the replacement's delivery binding.

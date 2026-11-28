@@ -10,6 +10,7 @@
 use std::fs::{DirBuilder, FileType, Metadata, OpenOptions};
 use std::io;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// `options` creating files with `mode` (Unix); unchanged on Windows.
 pub fn with_mode(options: &mut OpenOptions, mode: u32) -> &mut OpenOptions {
@@ -278,6 +279,33 @@ pub fn lock_exclusive(path: &Path) -> io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// Acquires an exclusive advisory lock on a private lock file at `path`,
+/// waiting with bounded exponential backoff up to `max_wait` so a stalled
+/// peer process cannot block callers forever.
+pub fn lock_exclusive_bounded(path: &Path, max_wait: Duration) -> io::Result<std::fs::File> {
+    let file = open_private_lock(path)?;
+    let deadline = Instant::now() + max_wait;
+    let mut backoff = Duration::from_millis(5);
+    loop {
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => return Ok(file),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if lock_held(&error) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("timed out waiting for exclusive lock {}", path.display()),
+                    ));
+                }
+                std::thread::sleep(backoff.min(deadline - now));
+                backoff = (backoff * 2).min(Duration::from_millis(100));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Acquires an exclusive advisory lock on `path`, migrating a pre-existing
 /// owner-owned regular lock file that has no group/other write bits (such as
 /// a legacy `0644` file created under umask `022`) to `0600` in place via its
@@ -430,7 +458,15 @@ mod tests {
         let path = dir.path().join("nested").join("shared.lock");
         let held = lock_exclusive(&path).unwrap();
         assert!(try_lock_exclusive(&path).unwrap().is_none());
+        assert_eq!(
+            lock_exclusive_bounded(&path, Duration::from_millis(15))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
         drop(held);
+        let bounded = lock_exclusive_bounded(&path, Duration::from_millis(50)).unwrap();
+        drop(bounded);
         let acquired = try_lock_exclusive(&path).unwrap();
         assert!(acquired.is_some());
         drop(acquired);
