@@ -32,12 +32,12 @@ Cancellation stops audio/deltas for that request and releases lane work only if 
 
 ## Required interfaces before implementation
 
-| Owner | Missing contract |
-| --- | --- |
-| Cloud | Hosted, caller-scoped post-send voice issuance and attestation with tested revocation; person-scoped stream and a host-authenticated ingress bound to the accepted turn. |
-| Relay core | Exact accepted-turn receipt from proxy and native window; durable lane claim/outbox; read-only lane context snapshot and ordered lead-command handoff. |
-| Skip lead | A versioned read-only ledger/roster/session view for voice and a single-writer command intake; an explicit reconciliation event for the lead. |
-| Mac client | `queued`, `accepted` and `responding` from the same pinned request/session; cancellation and replay; per-stage latency marks. |
+| Owner      | Missing contract                                                                                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Cloud      | Hosted, caller-scoped post-send voice issuance and attestation with tested revocation; person-scoped stream and a host-authenticated ingress bound to the accepted turn. |
+| Relay core | Exact accepted-turn receipt from proxy and native window; durable lane claim/outbox; read-only lane context snapshot and ordered lead-command handoff.                   |
+| Skip lead  | A versioned read-only ledger/roster/session view for voice and a single-writer command intake; an explicit reconciliation event for the lead.                            |
+| Mac client | `queued`, `accepted` and `responding` from the same pinned request/session; cancellation and replay; per-stage latency marks.                                            |
 
 An alternative in-place solution needs a new Codex app-server operation that yields an exact active turn at a safe checkpoint, returns a resumable continuation, admits one separately identified Fast turn after earlier accepted work, and resumes the original turn without repeating tools or losing its pending approvals. The current protocol has no such operation. `turn/steer` and `turn/interrupt` cannot substitute for it.
 
