@@ -4,7 +4,9 @@
 //! expected fields from the delivered message and current registration.
 
 use chrono::{DateTime, Duration, Utc};
-use serde_json::Value;
+use serde_json::{json, Value};
+
+const LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// All identifiers that one Fast turn must match. In particular, the Relay
 /// message ID exists only after Relaycast stores the DM.
@@ -51,10 +53,67 @@ pub(crate) fn authorized(response: &Value, binding: &Binding<'_>, now: DateTime<
     expires > now && expires <= now + Duration::seconds(60)
 }
 
+/// A staged, fail-closed lookup against Cloud's recipient-token route. The
+/// token is the recipient agent's Relaycast credential, never the person's
+/// Cloud session. The request ID is only a lookup key: Cloud must have issued
+/// a durable intent for the exact post-send message before authorizing it.
+/// No production delivery path calls this until that hosted contract and the
+/// native/proxy path on Skip's host have been verified.
+pub(crate) async fn lookup(
+    account: &crate::relay::cloud_session::CloudAccount,
+    recipient_token: &crate::relay::workspace::Secret,
+    binding: &Binding<'_>,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(site) = crate::relay::workspace::validated_base_url(&account.site_url) else {
+        return false;
+    };
+    if account.workspace_id != binding.workspace_id
+        || account.user_id.as_deref().is_none_or(str::is_empty)
+        || recipient_token.expose().is_empty()
+        || [
+            binding.workspace_id,
+            binding.sender_agent_id,
+            binding.recipient_agent_id,
+            binding.recipient_session_id,
+            binding.message_id,
+            binding.request_id,
+        ]
+        .iter()
+        .any(|value| value.is_empty())
+    {
+        return false;
+    }
+    let workspace = crate::relay::cloud_session::segment(binding.workspace_id);
+    let url = format!("{site}/api/v1/workspaces/{workspace}/messaging/voice-attestation");
+    let request = json!({
+        "senderAgentId": binding.sender_agent_id,
+        "recipientAgentId": binding.recipient_agent_id,
+        "recipientSessionId": binding.recipient_session_id,
+        "messageId": binding.message_id,
+        "requestId": binding.request_id,
+    });
+    let Ok(answer) = crate::relay::cloud_http::send(
+        "POST",
+        url,
+        Some(recipient_token.expose().to_string()),
+        Some(request),
+        LOOKUP_TIMEOUT,
+    )
+    .await
+    else {
+        return false;
+    };
+    answer.status == 200 && authorized(&answer.body, binding, now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
 
     const BINDING: Binding<'static> = Binding {
         workspace_id: "w1",
@@ -126,5 +185,107 @@ mod tests {
         assert!(!authorized(&wrong, &BINDING, now()));
         wrong["expiresAt"] = json!("invalid");
         assert!(!authorized(&wrong, &BINDING, now()));
+    }
+
+    fn serve(status: &'static str, body: Value) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (send, receive) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut bytes = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut bytes).unwrap();
+                request.extend_from_slice(&bytes[..n]);
+                let Some(headers_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers_end = headers_end + 4;
+                let headers = String::from_utf8_lossy(&request[..headers_end]);
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap();
+                if request.len() >= headers_end + length {
+                    break;
+                }
+            }
+            send.send(String::from_utf8(request).unwrap()).unwrap();
+            let body = body.to_string();
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        (url, receive)
+    }
+
+    #[tokio::test]
+    async fn lookup_uses_recipient_token_and_exact_cloud_route() {
+        let (site_url, request) = serve("200 OK", response());
+        let account = crate::relay::cloud_session::CloudAccount {
+            site_url,
+            workspace_id: "w1".into(),
+            user_id: Some("u1".into()),
+        };
+        assert!(
+            lookup(
+                &account,
+                &crate::relay::workspace::Secret::new("recipient-token"),
+                &BINDING,
+                now()
+            )
+            .await
+        );
+        let request = request.recv().unwrap();
+        assert!(request
+            .starts_with("POST /api/v1/workspaces/w1/messaging/voice-attestation HTTP/1.1\r\n"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer recipient-token\r\n"));
+        let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["senderAgentId"], "person-relay-id");
+        assert_eq!(body["recipientSessionId"], "skip-session");
+        assert_eq!(body["messageId"], "m1");
+        assert_eq!(body["requestId"], "r1");
+        assert!(body.get("senderUserId").is_none());
+    }
+
+    #[tokio::test]
+    async fn lookup_denial_and_wrong_binding_fail_closed() {
+        let token = crate::relay::workspace::Secret::new("recipient-token");
+        let (site_url, _) = serve("403 Forbidden", response());
+        let account = crate::relay::cloud_session::CloudAccount {
+            site_url,
+            workspace_id: "w1".into(),
+            user_id: Some("u1".into()),
+        };
+        assert!(!lookup(&account, &token, &BINDING, now()).await);
+
+        let mut forged = response();
+        forged["messageId"] = json!("other-message");
+        let (site_url, _) = serve("200 OK", forged);
+        let account = crate::relay::cloud_session::CloudAccount {
+            site_url,
+            workspace_id: "w1".into(),
+            user_id: Some("u1".into()),
+        };
+        assert!(!lookup(&account, &token, &BINDING, now()).await);
+        let wrong_workspace = crate::relay::cloud_session::CloudAccount {
+            workspace_id: "other".into(),
+            ..account
+        };
+        assert!(!lookup(&wrong_workspace, &token, &BINDING, now()).await);
     }
 }

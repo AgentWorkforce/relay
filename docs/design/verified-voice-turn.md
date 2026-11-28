@@ -14,7 +14,7 @@ the original DM cannot bind it. Before selecting Fast, the node needs a
 post-send authorization lookup from Cloud using the signed-in Desktop session
 and the recipient agent token, as it already does for owner delegation.
 
-Proposed lookup (Cloud has a held offline PR; no hosted route yet):
+Staged lookup (Cloud has a held offline PR; no hosted route yet):
 
 ```text
 POST /api/v1/workspaces/{workspaceId}/messaging/voice-attestation
@@ -40,6 +40,17 @@ away. A missing, expired, revoked, mismatched, or unreachable answer means
 normal service. No message is dropped because Fast authorization failed.
 Replays must not start a second turn. A raw Relaycast metadata field is never
 sufficient.
+
+The uncalled node adapter uses the signed-in account's validated Cloud origin,
+the recipient Relaycast token, and the exact current delivery binding. It sends
+no `senderUserId` claim, accepts only a 200 with all matching fields and a
+fresh 60-second expiry, and returns false on any denial, mismatch or network
+failure. The native owner-delivery and ordinary proxy paths still need to
+derive that binding from their current registration and connect this lookup
+only after hosted issuance is verified, then recheck account, registration,
+owner and workspace at the actual turn submission. Cloud#6802 has an offline
+durable post-send issuance row and forged-marker refusal test, but no hosted
+readback.
 
 ## Both delivery routes
 
