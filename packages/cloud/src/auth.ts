@@ -207,6 +207,7 @@ export async function refreshStoredCloudIdentity(
       },
       {
         interactive: false,
+        env,
         validateApiUrl: options.validateApiUrl,
       }
     );

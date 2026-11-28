@@ -1692,6 +1692,72 @@ describe('authFilePath / AGENT_RELAY_HOME isolation', () => {
     expect(await readStoredAuth(devEnv)).toEqual(nextRefreshedDev);
     expect(await readStoredAuth(prodEnv)).toEqual(prodAuth);
 
+    // Ensure refreshStoredCloudIdentity forwards env to authorizedApiFetch on 401 retry
+    // even when process.env holds another login for the same API host.
+    const ambientSameHostAuth: StoredAuth = {
+      apiUrl: devAuth.apiUrl,
+      accessToken: 'ambient-access',
+      refreshToken: 'ambient-refresh',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    await writeStoredAuth(ambientSameHostAuth);
+
+    const whoamiRefreshedDev: StoredAuth = {
+      ...nextRefreshedDev,
+      accessToken: 'dev-access-4',
+      refreshToken: 'dev-refresh-4',
+    };
+    let sawDevRefreshToken = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/api/v1/auth/token/refresh')) {
+          const parsedBody = JSON.parse(String(init?.body ?? '{}')) as { refreshToken?: string };
+          if (parsedBody.refreshToken === 'dev-refresh-3') {
+            sawDevRefreshToken = true;
+            return new Response(JSON.stringify(whoamiRefreshedDev), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          return new Response(
+            JSON.stringify({
+              ...ambientSameHostAuth,
+              accessToken: 'ambient-access-unexpected',
+              refreshToken: 'ambient-refresh-unexpected',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        }
+        const authHeader = new Headers(init?.headers).get('authorization');
+        if (authHeader === 'Bearer dev-access-4') {
+          return new Response(
+            JSON.stringify({
+              authenticated: true,
+              user: { id: 'usr_dev', email: 'dev@example.com' },
+            } satisfies WhoAmIResponse),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        }
+        return new Response('{}', { status: 401 });
+      })
+    );
+
+    fsMocks.mkdir.mockClear();
+    const refreshedIdentity = await refreshStoredCloudIdentity(nextRefreshedDev, { env: devEnv });
+    expect(sawDevRefreshToken).toBe(true);
+    expect(refreshedIdentity).toMatchObject({
+      userId: 'usr_dev',
+      email: 'dev@example.com',
+      apiUrl: devAuth.apiUrl,
+    });
+    expect(await readStoredAuth(devEnv)).toEqual(whoamiRefreshedDev);
+    expect(await readStoredAuth()).toEqual(ambientSameHostAuth);
+    expect(await readStoredAuth(prodEnv)).toEqual(prodAuth);
+    expect(fsMocks.mkdir).toHaveBeenCalledWith(devLock, { mode: 0o700 });
+    expect(fsMocks.mkdir).not.toHaveBeenCalledWith(`${authFilePath()}.lock`, { mode: 0o700 });
+
     await clearStoredAuth(devEnv);
     expect(await readStoredAuth(devEnv)).toBeNull();
     expect(await readStoredAuth(prodEnv)).toEqual(prodAuth);

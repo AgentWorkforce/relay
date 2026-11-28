@@ -285,6 +285,12 @@ export const REFRESH_TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_REFRESH_TIMEOUT_MS = 10_000;
 const DEFAULT_AUTH_DIR = path.join(os.homedir(), '.agentworkforce/relay');
 
+/**
+ * Resolve the Cloud credentials file under the configured Relay home.
+ * @param env - Environment whose nonblank AGENT_RELAY_HOME selects the directory;
+ * otherwise use ~/.agentworkforce/relay. Defaults to process.env.
+ * @returns The path to cloud-auth.json in the selected directory.
+ */
 export function authFilePath(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.AGENT_RELAY_HOME?.trim() || DEFAULT_AUTH_DIR;
   return path.join(dir, 'cloud-auth.json');
