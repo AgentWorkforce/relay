@@ -31,6 +31,10 @@ pub mod stall;
 pub mod stop_hook;
 pub mod threads;
 pub mod turn_hook;
+// Exact-binding check for Cloud's post-send voice attestation. The network
+// lookup is intentionally not connected until Cloud publishes its route.
+#[allow(dead_code)]
+mod voice;
 
 pub use processes::CodexProcessSession;
 pub use router::{CodexRouter, CodexRoutes, QueueError, SystemCodexRoutes};
