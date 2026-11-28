@@ -45,11 +45,12 @@ The uncalled node adapter uses the signed-in account's validated Cloud origin,
 the recipient Relaycast token, and the exact current delivery binding. It sends
 no `senderUserId` claim, but compares Cloud's returned user ID with the
 currently signed-in person. It accepts only a 200 with all matching fields and a
-fresh 60-second expiry, and returns false on any denial, mismatch or network
-failure. The native owner-delivery and ordinary proxy paths still need to
-derive that binding from their current registration and connect this lookup
-only after hosted issuance is verified, then recheck account, registration,
-owner and workspace at the actual turn submission. Cloud#6802 has an offline
+fresh 60-second expiry checked after the HTTP response. It returns false on
+any denial, mismatch or network failure. The native owner-delivery and ordinary
+proxy paths still need to derive that binding from their current registration
+and connect this lookup only after hosted issuance is verified. It must then
+recheck account, registration, owner and workspace at the actual turn
+submission. Cloud#6802 has an offline
 durable post-send issuance row and forged-marker refusal test, but no hosted
 readback.
 

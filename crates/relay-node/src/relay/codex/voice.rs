@@ -63,7 +63,6 @@ pub(crate) async fn lookup(
     account: &crate::relay::cloud_session::CloudAccount,
     recipient_token: &crate::relay::workspace::Secret,
     binding: &Binding<'_>,
-    now: DateTime<Utc>,
 ) -> bool {
     let Some(site) = crate::relay::workspace::validated_base_url(&account.site_url) else {
         return false;
@@ -105,7 +104,7 @@ pub(crate) async fn lookup(
         return false;
     };
     answer.status == 200
-        && authorized(&answer.body, binding, now)
+        && authorized(&answer.body, binding, Utc::now())
         && answer.body["senderUserId"].as_str() == account.user_id.as_deref()
 }
 
@@ -144,6 +143,12 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-11-28T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    fn live_response() -> Value {
+        let mut value = response();
+        value["expiresAt"] = json!((Utc::now() + Duration::seconds(30)).to_rfc3339());
+        value
     }
 
     #[test]
@@ -235,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn lookup_uses_recipient_token_and_exact_cloud_route() {
-        let (site_url, request) = serve("200 OK", response());
+        let (site_url, request) = serve("200 OK", live_response());
         let account = crate::relay::cloud_session::CloudAccount {
             site_url,
             workspace_id: "w1".into(),
@@ -245,8 +250,7 @@ mod tests {
             lookup(
                 &account,
                 &crate::relay::workspace::Secret::new("recipient-token"),
-                &BINDING,
-                now()
+                &BINDING
             )
             .await
         );
@@ -267,15 +271,15 @@ mod tests {
     #[tokio::test]
     async fn lookup_denial_and_wrong_binding_fail_closed() {
         let token = crate::relay::workspace::Secret::new("recipient-token");
-        let (site_url, _) = serve("403 Forbidden", response());
+        let (site_url, _) = serve("403 Forbidden", live_response());
         let account = crate::relay::cloud_session::CloudAccount {
             site_url,
             workspace_id: "w1".into(),
             user_id: Some("u1".into()),
         };
-        assert!(!lookup(&account, &token, &BINDING, now()).await);
+        assert!(!lookup(&account, &token, &BINDING).await);
 
-        let mut forged = response();
+        let mut forged = live_response();
         forged["messageId"] = json!("other-message");
         let (site_url, _) = serve("200 OK", forged);
         let account = crate::relay::cloud_session::CloudAccount {
@@ -283,19 +287,19 @@ mod tests {
             workspace_id: "w1".into(),
             user_id: Some("u1".into()),
         };
-        assert!(!lookup(&account, &token, &BINDING, now()).await);
+        assert!(!lookup(&account, &token, &BINDING).await);
         let wrong_workspace = crate::relay::cloud_session::CloudAccount {
             workspace_id: "other".into(),
             ..account
         };
-        assert!(!lookup(&wrong_workspace, &token, &BINDING, now()).await);
+        assert!(!lookup(&wrong_workspace, &token, &BINDING).await);
 
-        let (site_url, _) = serve("200 OK", response());
+        let (site_url, _) = serve("200 OK", live_response());
         let wrong_person = crate::relay::cloud_session::CloudAccount {
             site_url,
             workspace_id: "w1".into(),
             user_id: Some("other-user".into()),
         };
-        assert!(!lookup(&wrong_person, &token, &BINDING, now()).await);
+        assert!(!lookup(&wrong_person, &token, &BINDING).await);
     }
 }
