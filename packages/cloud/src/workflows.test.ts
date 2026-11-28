@@ -136,6 +136,72 @@ describe('relayflow version request contract', () => {
     });
   });
 
+  it('submits a statically inferred script launch timeout as authenticated request metadata', async () => {
+    const bodies = captureRunBodies();
+    const workflow = "const result = await workflow('proof').timeout(3_300_000).run();";
+
+    await runWorkflow(workflow, { fileType: 'ts', syncCode: false });
+
+    expect(JSON.parse(bodies[0])).toEqual({
+      workflow,
+      fileType: 'ts',
+      launchTimeoutMs: 3_300_000,
+    });
+  });
+
+  it('preserves the omitted run request when a literal script timeout exceeds the metadata limit', async () => {
+    const bodies = captureRunBodies();
+    const workflow = "const result = await workflow('verify').timeout(3_600_000).run();";
+
+    await runWorkflow(workflow, { fileType: 'ts', syncCode: false });
+
+    expect(bodies).toEqual([JSON.stringify({ workflow, fileType: 'ts' })]);
+  });
+
+  it('submits ambiguous script budgets without optional metadata', async () => {
+    const bodies = captureRunBodies();
+    const workflow = "workflow('one').timeout(600_000)\nworkflow('two').timeout(900_000)";
+
+    await runWorkflow(workflow, { fileType: 'ts', syncCode: false });
+
+    expect(bodies).toEqual([JSON.stringify({ workflow, fileType: 'ts' })]);
+  });
+
+  it('uses the explicit launch timeout when script configuration is dynamic', async () => {
+    const bodies = captureRunBodies();
+    const workflow = "const result = await workflow('proof').timeout(timeoutMs).run();";
+
+    await runWorkflow(workflow, {
+      fileType: 'ts',
+      syncCode: false,
+      launchTimeoutMs: 900_000,
+    });
+
+    expect(JSON.parse(bodies[0])).toMatchObject({ launchTimeoutMs: 900_000 });
+  });
+
+  it('omits launch timeout metadata when literal and dynamic builders are mixed', async () => {
+    const bodies = captureRunBodies();
+    const workflow = "workflow('dynamic').timeout(timeoutMs); workflow('literal').timeout(900_000);";
+
+    await runWorkflow(workflow, { fileType: 'ts', syncCode: false });
+
+    expect(JSON.parse(bodies[0])).toEqual({ workflow, fileType: 'ts' });
+  });
+
+  it('rejects an invalid explicit timeout before authentication, filesystem, or network access', async () => {
+    await expect(
+      runWorkflow('missing-workflow.ts', {
+        fileType: 'ts',
+        syncCode: false,
+        launchTimeoutMs: 1,
+      })
+    ).rejects.toThrow('launchTimeoutMs must be at least');
+
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects an unknown run selector before authentication, filesystem, or network access', async () => {
     await expect(
       runWorkflow('missing-workflow.yaml', {
@@ -947,6 +1013,7 @@ describe('workflow schedules', () => {
       cron: '0 * * * *',
       name: 'Hourly eval',
       relayflowVersion: 'v1',
+      launchTimeoutMs: 900_000,
       envSecrets: {
         AI_CLI_UPDATES_DRY_RUN: 'true',
         AI_CLI_UPDATES_ONLY: 'codex',
@@ -962,6 +1029,7 @@ describe('workflow schedules', () => {
       workflowRequest: {
         fileType: 'yaml',
         relayflowVersion: 'v1',
+        launchTimeoutMs: 900_000,
         envSecrets: {
           AI_CLI_UPDATES_DRY_RUN: 'true',
           AI_CLI_UPDATES_ONLY: 'codex',
@@ -998,6 +1066,37 @@ describe('workflow schedules', () => {
       codeSourceRunId: '11111111-1111-4111-8111-111111111111',
     });
     expect(scheduleBodyBytes[0]).not.toContain('relayflowVersion');
+  });
+
+  it.each([
+    "const result = await workflow('verify').timeout(3_600_000).run();",
+    "workflow('one').timeout(600_000); workflow('two').timeout(900_000);",
+  ])('preserves omitted schedule metadata for unresolvable literals: %s', async (workflow) => {
+    const workflowPath = path.join(tmpRoot, 'workflow.ts');
+    await writeFile(workflowPath, workflow);
+    const scheduleBodies: Record<string, unknown>[] = [];
+    mockScheduleRequests((body) => {
+      scheduleBodies.push(body);
+      return new Response(JSON.stringify({ schedule: scheduleRecord() }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    await scheduleWorkflow(workflowPath, { cron: '0 * * * *' });
+
+    expect(scheduleBodies).toHaveLength(1);
+    const { workflowRequest, ...schedule } = scheduleBodies[0] as {
+      workflowRequest: Record<string, unknown>;
+    };
+    expect(schedule).toEqual({
+      name: 'workflow.ts',
+      schedule_type: 'cron',
+      timezone: 'UTC',
+      cron_expression: '0 * * * *',
+    });
+    expect(workflowRequest).toMatchObject({ workflow, fileType: 'ts' });
+    expect(workflowRequest).not.toHaveProperty('launchTimeoutMs');
   });
 
   it('stores each declared path archive in a multi-path schedule snapshot', async () => {
@@ -1373,6 +1472,18 @@ describe('workflow schedules', () => {
     await expect(scheduleWorkflow('workflow.yaml', {})).rejects.toThrow(
       'Provide exactly one of --cron or --at.'
     );
+  });
+
+  it('rejects an invalid schedule timeout before authentication, filesystem, or network access', async () => {
+    await expect(
+      scheduleWorkflow('missing-workflow.ts', {
+        cron: '0 * * * *',
+        launchTimeoutMs: 55 * 60 * 1000 + 1,
+      })
+    ).rejects.toThrow('launchTimeoutMs must not exceed');
+
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects invalid one-time schedule timestamps before preparing or uploading a snapshot', async () => {
