@@ -516,7 +516,8 @@ pub fn claude_question_hook(socket: Option<&Path>, build: &Build) -> Result<()> 
 /// the queue for a later boundary. An empty inbox, an event that does not
 /// inject or any failure prints nothing and exits 0, so a hook boundary
 /// can never break the session it observes. `--dev` selects Agent Relay
-/// Dev's own inbox, never production's.
+/// Dev's session socket (and drains an unmigrated legacy `inbox-dev.d` if
+/// present, without reading production's `inbox.d`).
 pub fn devin_hook(development: bool) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
@@ -551,7 +552,12 @@ pub fn devin_hook(development: bool) -> Result<()> {
         return Ok(());
     }
     let config = crate::relay::devin::DevinConfig::from_env(&|key| std::env::var(key).ok(), &home);
-    let mut answer = crate::relay::devin::hook_answer(&config, &payload);
+    let legacy_dev_inbox = config.data_dir.join("relay").join("inbox-dev.d");
+    let mut answer = if development && owned_real_dir(&legacy_dev_inbox) {
+        crate::relay::devin::hook_answer_in(&legacy_dev_inbox, &payload)
+    } else {
+        crate::relay::devin::hook_answer(&config, &payload)
+    };
     // At a Stop not already continuing from a block, the build's turn-end
     // advisory from the core, after any pending messages or alone.
     let session = payload["session_id"].as_str().unwrap_or("");
@@ -587,6 +593,12 @@ pub fn devin_hook(development: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn owned_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| {
+        meta.file_type().is_dir() && crate::platform::fs::owned_by_current_user(&meta)
+    })
 }
 
 fn hook_build(development: bool) -> Build {
@@ -655,7 +667,8 @@ fn turn_end_shown(socket: &Path, kind: SessionKind, session: &str, ids: &[String
 /// and put back if it is not (`cursor_cli::run_hook`). Anything else exits 0
 /// with `cursor_cli::no_answer`'s output (`{}`, or `{"continue":true}` for
 /// `beforeSubmitPrompt`), so a hook can never break the session it runs in.
-/// `--dev` selects Agent Relay Dev's inbox.
+/// `--dev` selects Agent Relay Dev's session socket (and drains an unmigrated
+/// legacy `inbox-dev.d` if present, without reading production's `inbox.d`).
 pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
     use crate::relay::cursor_cli::{wait as waiting, CursorConfig, CursorSettings};
     let mut input = Vec::new();
@@ -722,15 +735,31 @@ pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
             take: &take,
             shown: &shown,
         };
-        crate::relay::cursor_cli::run_hook_with(
-            &config,
-            &table,
-            pid,
-            &payload,
-            watch.as_ref(),
-            Some(&turn_end),
-            &mut write,
-        );
+        let legacy_dev_inbox = home
+            .join(".agentworkforce")
+            .join("desktop")
+            .join("cursor")
+            .join("inbox-dev.d");
+        if development && owned_real_dir(&legacy_dev_inbox) {
+            crate::relay::cursor_cli::drain_legacy_inbox(
+                &config,
+                &legacy_dev_inbox,
+                &table,
+                pid,
+                &payload,
+                &mut write,
+            );
+        } else {
+            crate::relay::cursor_cli::run_hook_with(
+                &config,
+                &table,
+                pid,
+                &payload,
+                watch.as_ref(),
+                Some(&turn_end),
+                &mut write,
+            );
+        }
     }
     if !answered {
         let output = crate::relay::cursor_cli::no_answer(&payload);

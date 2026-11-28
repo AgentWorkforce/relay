@@ -651,12 +651,11 @@ struct Pending {
 /// they fed is written, so a failed or partial write loses nothing. A
 /// `no-session` or malformed id drains nothing: only a real session's
 /// files are touched.
-fn pending(config: &DevinConfig, session_id: &str) -> Vec<Pending> {
+fn pending_in(inbox: &Path, session_id: &str) -> Vec<Pending> {
     if !is_session_id(session_id) {
         return Vec::new();
     }
-    let inbox = config.inbox();
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(&inbox)
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(inbox)
         .map(|entries| {
             entries
                 .flatten()
@@ -700,6 +699,16 @@ pub fn hook_answer(
     config: &DevinConfig,
     payload: &serde_json::Value,
 ) -> Option<(serde_json::Value, Vec<PathBuf>)> {
+    hook_answer_in(&config.inbox(), payload)
+}
+
+/// [`hook_answer`] draining a specific inbox directory (used by legacy `--dev`
+/// hooks to finish draining an unmigrated `inbox-dev.d` without reading
+/// production's `inbox.d`).
+pub(crate) fn hook_answer_in(
+    inbox: &Path,
+    payload: &serde_json::Value,
+) -> Option<(serde_json::Value, Vec<PathBuf>)> {
     let event = payload["hook_event_name"].as_str()?;
     if !HOOK_EVENTS.contains(&event) {
         return None;
@@ -710,7 +719,7 @@ pub fn hook_answer(
         return None;
     }
     let session_id = payload["session_id"].as_str().unwrap_or("");
-    let drained = pending(config, session_id);
+    let drained = pending_in(inbox, session_id);
     if drained.is_empty() {
         return None;
     }

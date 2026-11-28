@@ -513,6 +513,35 @@ pub fn record_editor_hook(
 /// (`wait::wait`), once its `stop` noted the turn ended, and named it when
 /// it ran no `beforeSubmitPrompt` (`wait::stop_seen`). `true` once it
 /// answered.
+/// Drains pending messages from a legacy `inbox-dev.d` directory for a
+/// pre-upgrade `--dev` hook without touching production's `inbox.d`, after
+/// proving the hook runs under the conversation's holder.
+pub(crate) fn drain_legacy_inbox(
+    config: &CursorConfig,
+    legacy_inbox: &Path,
+    table: &dyn ProcessTable,
+    pid: i32,
+    payload: &Value,
+    write: &mut dyn FnMut(&Value) -> bool,
+) -> bool {
+    let Some(session) = payload_session(payload) else {
+        return false;
+    };
+    if hook_caller(config, table, pid, session).is_none() {
+        return false;
+    }
+    let Some(answer) = inbox::hook_answer_in(legacy_inbox, payload) else {
+        return false;
+    };
+    if write(&answer.output) {
+        drain(&answer.claimed);
+        true
+    } else {
+        inbox::unclaim_in(legacy_inbox, &answer.claimed);
+        false
+    }
+}
+
 pub fn run_hook(
     config: &CursorConfig,
     table: &dyn ProcessTable,
