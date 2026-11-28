@@ -39,6 +39,23 @@ fn waiting_messages_mark_stalled_and_new_events_clear_the_mark() {
 }
 
 #[test]
+fn a_progressing_nonspawn_turn_can_hold_a_message_past_ten_minutes_without_overtaking() {
+    let (fake, router, clock) = stalled();
+    for minute in 0..=11 {
+        *clock.lock().unwrap() = Duration::from_secs(minute * 60);
+        fake.progress.lock().unwrap().as_mut().unwrap().at_ms += 1;
+        assert_eq!(
+            router.inject(THREAD, "voice-message", "person request"),
+            InjectOutcome::Waiting(BUSY.into())
+        );
+        assert!(router.inbox_stall(THREAD).is_none());
+    }
+    assert!(fake.recoveries.lock().unwrap().is_empty());
+    assert_eq!(count(&fake.app_sends), 0);
+    assert_eq!(count(&fake.window_sends), 0);
+}
+
+#[test]
 fn only_spawned_agents_can_interrupt_after_the_longer_threshold() {
     for spawned in [false, true] {
         let (fake, router, clock) = stalled();
