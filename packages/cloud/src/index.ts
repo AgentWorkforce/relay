@@ -101,6 +101,7 @@ export {
   type MaterializeCloudRelayfileRepositoryInput,
   type CloudRelayfileRepositoryMaterialization,
   type CloudRelayfileRepositoryMaterializeOptions,
+  type CloudRelayfileRepositoryProgress,
   type CloudFleetSandboxReady,
   type CloudFleetSandboxReused,
   type CloudFleetSandboxProvisioningTimeout,
