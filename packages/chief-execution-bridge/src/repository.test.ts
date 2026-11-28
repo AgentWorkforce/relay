@@ -259,8 +259,9 @@ describe('the bridge with refreshRepositories', () => {
     h.relay.deliverAssignment(made.assignment, made.digest);
     h.git.holdNextFetch = true;
     const first = h.bridge.tick();
-    // Let the first pass reach its fetch.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Wait until the first pass is parked in its fetch. A fixed sleep raced on a loaded
+    // machine: the second pass reached the fetch first, took the hold and never returned.
+    await h.git.fetchHeld();
     await h.bridge.tick();
     h.git.release();
     await first;
