@@ -10,7 +10,8 @@ use serde_json::Value;
 /// message ID exists only after Relaycast stores the DM.
 pub(crate) struct Binding<'a> {
     pub workspace_id: &'a str,
-    pub sender_user_id: &'a str,
+    /// Relaycast's immutable `message.agent_id`, as delivered to this node.
+    pub sender_agent_id: &'a str,
     pub recipient_agent_id: &'a str,
     pub recipient_session_id: &'a str,
     pub message_id: &'a str,
@@ -25,7 +26,7 @@ pub(crate) fn authorized(response: &Value, binding: &Binding<'_>, now: DateTime<
     }
     for (field, expected) in [
         ("workspaceId", binding.workspace_id),
-        ("senderUserId", binding.sender_user_id),
+        ("senderAgentId", binding.sender_agent_id),
         ("recipientAgentId", binding.recipient_agent_id),
         ("recipientSessionId", binding.recipient_session_id),
         ("messageId", binding.message_id),
@@ -34,6 +35,11 @@ pub(crate) fn authorized(response: &Value, binding: &Binding<'_>, now: DateTime<
         if expected.is_empty() || response[field].as_str() != Some(expected) {
             return false;
         }
+    }
+    // Cloud alone resolves this Relaycast identity to a current person.
+    // The node cannot assert or compare the person's internal user ID.
+    if response["senderUserId"].as_str().is_none_or(str::is_empty) {
+        return false;
     }
     let Some(expires) = response["expiresAt"]
         .as_str()
@@ -52,7 +58,7 @@ mod tests {
 
     const BINDING: Binding<'static> = Binding {
         workspace_id: "w1",
-        sender_user_id: "u1",
+        sender_agent_id: "person-relay-id",
         recipient_agent_id: "skip-agent",
         recipient_session_id: "skip-session",
         message_id: "m1",
@@ -63,6 +69,7 @@ mod tests {
         json!({
             "authorized": true,
             "workspaceId": "w1",
+            "senderAgentId": "person-relay-id",
             "senderUserId": "u1",
             "recipientAgentId": "skip-agent",
             "recipientSessionId": "skip-session",
@@ -87,7 +94,7 @@ mod tests {
     fn every_binding_field_is_required_and_exact() {
         for field in [
             "workspaceId",
-            "senderUserId",
+            "senderAgentId",
             "recipientAgentId",
             "recipientSessionId",
             "messageId",
@@ -99,6 +106,12 @@ mod tests {
             wrong.as_object_mut().unwrap().remove(field);
             assert!(!authorized(&wrong, &BINDING, now()), "missing {field}");
         }
+        let mut missing_person = response();
+        missing_person
+            .as_object_mut()
+            .unwrap()
+            .remove("senderUserId");
+        assert!(!authorized(&missing_person, &BINDING, now()));
     }
 
     #[test]

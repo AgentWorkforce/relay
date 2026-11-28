@@ -19,17 +19,20 @@ Proposed lookup (Cloud owner is building this offline; no hosted route yet):
 ```text
 POST /api/v1/workspaces/{workspaceId}/messaging/voice-attestation
 Authorization: Bearer <recipient Relaycast agent token>
-{messageId, requestId, recipientAgentId, recipientSessionId, senderUserId}
+{messageId, requestId, recipientAgentId, recipientSessionId, senderAgentId}
 
-200 {authorized:true, workspaceId, senderUserId, recipientAgentId,
+200 {authorized:true, workspaceId, senderAgentId, senderUserId, recipientAgentId,
      recipientSessionId, messageId, requestId, expiresAt}
 ```
 
 Cloud must validate the bearer token as the exact recipient agent and session,
-read the message as that agent, verify the stored person sender and Cloud-set
+read the message as that agent, match `senderAgentId` to the stored DM's
+`agent_id`, resolve that ID to a current person, verify the Cloud-set
 `voice_request_id`, and recheck current workspace membership. The node must
 verify the authenticated HTTPS response inside its Cloud client and compare
-every returned claim to the exact delivery/current registration. It must
+the sender agent ID and every available returned claim to the exact
+delivery/current registration. Cloud alone can verify and report its internal
+`senderUserId`; the node requires it to be present but cannot supply it. It must
 require `authorized: true` and a future `expiresAt` no more than 60 seconds
 away. A missing, expired, revoked, mismatched, or unreachable answer means
 normal service. No message is dropped because Fast authorization failed.
