@@ -77,7 +77,7 @@ impl AnswerTap {
             Some("thread/status/changed")
                 if matches!(
                     params["status"]["type"].as_str(),
-                    Some("notLoaded" | "systemError")
+                    Some("idle" | "notLoaded" | "systemError")
                 ) =>
             {
                 if let Some(thread) = uuid_value(&params["threadId"]) {
@@ -330,6 +330,13 @@ mod tests {
             &json!({"method":"turn/completed","params":{"threadId":THREAD,"turn":{"id":TURN}}}),
         );
         tap.observe(&delta(THREAD, TURN, "answer", "too late"));
+        assert!(tap.take(THREAD, TURN, "relay-1", "voice-1").is_empty());
+
+        assert!(tap.arm(THREAD, TURN, "relay-1", "voice-1"));
+        tap.observe(&start(THREAD, TURN, "answer", json!("final_answer")));
+        tap.observe(&json!({"method":"thread/status/changed","params":{
+            "threadId":THREAD,"status":{"type":"idle"}}}));
+        tap.observe(&delta(THREAD, TURN, "answer", "after idle"));
         assert!(tap.take(THREAD, TURN, "relay-1", "voice-1").is_empty());
     }
 }
