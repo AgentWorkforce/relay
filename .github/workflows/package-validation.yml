@@ -32,7 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
-      TURBO_TELEMETRY_DISABLED: 1
 
     steps:
       - name: Checkout code
@@ -77,14 +76,6 @@ jobs:
             node_modules
             packages/*/node_modules
           key: modules-v3-${{ hashFiles('package-lock.json') }}
-
-      # Cache turbo build outputs for incremental builds
-      - name: Cache turbo
-        uses: actions/cache@v4
-        with:
-          path: .turbo
-          key: turbo-${{ github.sha }}
-          restore-keys: turbo-
 
       - name: Build packages
         run: |
@@ -191,7 +182,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
-      TURBO_TELEMETRY_DISABLED: 1
 
     steps:
       - name: Checkout code
@@ -223,7 +213,10 @@ jobs:
       - name: Build TypeScript packages
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        run: npm run clean && ./node_modules/.bin/turbo run build --filter='./packages/*' --concurrency=2
+        run: |
+          npm run build
+          # cloud sits outside the core build chain, same as the validate job.
+          npm --prefix packages/cloud run build
 
   standalone-macos-smoke:
     name: Standalone macOS Smoke
@@ -233,7 +226,6 @@ jobs:
     runs-on: macos-latest
     env:
       NPM_CONFIG_FUND: false
-      TURBO_TELEMETRY_DISABLED: 1
 
     steps:
       - name: Checkout code

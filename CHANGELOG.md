@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `agent-relay` no longer installs the unused `ai-hist-native` 0.4 optional addon. Session history still uses the native addon that ships with `ai-hist` 0.18.
 - Removed `agent-relay cloud room` commands; Rooms were retired from Agent Relay Cloud in August 2026. Invite people from the dashboard (Settings → Invite members) instead.
 
 ## [18.16.1] - 2026-11-25
