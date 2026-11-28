@@ -27,8 +27,10 @@ Authorization: Bearer <recipient Relaycast agent token>
 
 Cloud must validate the bearer token as the exact recipient agent and session,
 read the message as that agent, match `senderAgentId` to the stored DM's
-`agent_id`, resolve that ID to a current person, verify the Cloud-set
-`voice_request_id`, and recheck current workspace membership. The node must
+`agent_id`, resolve that ID to a current person, verify a durable **Cloud-issued**
+voice intent bound to the exact post-send `messageId`, and recheck current
+workspace membership. Relaycast message metadata is sender-asserted; its
+`cloud_voice_request_id` field is not proof even when it has that name. The node must
 verify the authenticated HTTPS response inside its Cloud client and compare
 the sender agent ID and every available returned claim to the exact
 delivery/current registration. Cloud alone can verify and report its internal
@@ -41,7 +43,9 @@ sufficient.
 
 ## Compatibility and rollout
 
-The current patch stages the app-server seam only. Normal turns omit the Fast
+The current patch stages the app-server seam only. The Cloud route and issuance
+must pass a forged-metadata refusal test before any live caller is connected.
+Normal turns omit the Fast
 field. An explicit `-32602` invalid-params response naming
 `serviceTierForTurn` permits one retry without the field and with the same
 `clientUserMessageId`. Timeouts and ambiguous errors never retry. The fast
