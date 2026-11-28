@@ -100,6 +100,7 @@ pub mod harness;
 pub mod hermes;
 pub mod hook_agents;
 pub mod hook_owner;
+pub mod hook_program;
 pub mod hosted_mcp;
 pub mod inject;
 pub mod integration_defaults;
