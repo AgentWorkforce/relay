@@ -14,8 +14,7 @@ use crate::relay::store::Registration;
 use crate::relay::workspace::Secret;
 use std::sync::{MutexGuard, PoisonError};
 #[cfg(test)]
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Why a delivery admitted before the organization's hold began waits.
 pub(crate) const HELD_SINCE: &str =
@@ -468,19 +467,16 @@ impl Core {
 
     /// A session's own queue (the mobile Claude handoff) settled
     /// `delivery_id`: read its agent's queue now rather than after the
-    /// waiting retry, so the sender's receipt follows the outcome. A delivery
-    /// with no pending retry is left alone. The retry is made due rather than
-    /// dropped: it keeps what it knows (handed over, so never held behind an
-    /// earlier message) until that read settles it (#2290 review).
+    /// waiting retry, so the sender's receipt follows the outcome. The retry
+    /// is made due rather than dropped, and it is now the session's: handed
+    /// over (never held behind an earlier message) and holding no later one
+    /// back, even if that read fails (#2290 review). The mobile route answers
+    /// `Waiting` until then, which left it holding later messages back.
+    /// The acknowledgment is remembered until the delivery settles, so a
+    /// pass that read `Waiting` before it and saves its retry after it, or a
+    /// first pass with no retry yet, keeps it too (#2296 review).
     pub(crate) fn settle_delivery_soon(&self, delivery_id: &str) {
-        let agent = self
-            .receipt_state()
-            .retries
-            .get_mut(delivery_id)
-            .map(|retry| {
-                retry.after = Instant::now();
-                retry.agent.clone()
-            });
+        let agent = self.receipt_state().acknowledge(delivery_id);
         if let Some(agent) = agent {
             self.request_drain(&agent);
         }
@@ -520,11 +516,21 @@ impl Core {
             .is_some_and(|retry| retry.handed_over)
     }
 
-    /// Marks `delivery_id`'s retry handed over, as an `Accepted` one is.
+    /// Whether `delivery_id`'s retry holds later messages back.
     #[cfg(test)]
-    pub(crate) fn mark_delivery_handed_over(&self, delivery_id: &str) {
+    pub(crate) fn delivery_holds_later(&self, delivery_id: &str) -> bool {
+        self.receipt_state()
+            .retries
+            .get(delivery_id)
+            .is_some_and(|retry| retry.holds_later)
+    }
+
+    /// Marks `delivery_id`'s retry as a `Waiting` one leaves it: out of the
+    /// session, holding later messages back.
+    #[cfg(test)]
+    pub(crate) fn mark_delivery_waiting(&self, delivery_id: &str) {
         if let Some(retry) = self.receipt_state().retries.get_mut(delivery_id) {
-            retry.handed_over = true;
+            retry.holds_later = true;
         }
     }
 }
@@ -532,17 +538,80 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relay::inject::InjectOutcome;
     use serde_json::json;
+    use std::sync::Arc;
 
     // #2290 review: a delivery the session's own queue settled is read again
-    // at once, and keeps its handover, so that read is never held behind an
-    // earlier message still waiting.
+    // at once and is the session's: never held behind an earlier message,
+    // and no longer holding later ones back, even if that read fails. The
+    // mobile route left it `Waiting` before the acknowledgement.
     #[tokio::test]
-    async fn settling_soon_makes_the_retry_due_and_keeps_its_handover() {
+    async fn settling_soon_makes_the_retry_due_and_releases_later_messages() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(&temp);
+        core.hold_delivery_retry("del_1", "agent", Duration::from_secs(60));
+        core.mark_delivery_waiting("del_1");
+        assert!(core.delivery_retry_pending("del_1"));
+        assert!(core.delivery_holds_later("del_1"));
+        core.settle_delivery_soon("del_1");
+        assert!(!core.delivery_retry_pending("del_1"));
+        assert!(core.delivery_handed_over("del_1"));
+        assert!(!core.delivery_holds_later("del_1"));
+    }
+
+    // #2296 review: a pass reads `Waiting`, then pauses (ringing an idle
+    // Claude) while the plugin acknowledges the message. The retry that pass
+    // saves afterwards keeps the acknowledgment: handed over, holding no
+    // later message back, and due once for the read the acknowledgment
+    // asked for, whether or not an earlier retry existed.
+    #[tokio::test]
+    async fn an_acknowledgment_during_a_waiting_pass_survives_its_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(&temp);
+        let registration: Registration = serde_json::from_value(json!({
+            "name":"agent", "agentID":"agent-id", "target":{"kind":"codex","id":"thread"},
+            "title":"agent", "baseURL":"http://127.0.0.1", "registeredAt":"now"
+        }))
+        .unwrap();
+        let waiting = InjectOutcome::Waiting("Waiting for Claude to collect it".into());
+        for (id, earlier_retry) in [("del_1", true), ("del_2", false)] {
+            let delivery = Delivery {
+                id: id.into(),
+                reason: Some("dm".into()),
+                ..Delivery::default()
+            };
+            if earlier_retry {
+                core.hold_delivery_retry(id, "agent", Duration::from_secs(60));
+                core.mark_delivery_waiting(id);
+            }
+            core.settle_delivery_soon(id);
+            core.keep_waiting(&registration, &delivery, &waiting);
+            assert!(core.delivery_handed_over(id), "{id}");
+            assert!(!core.delivery_holds_later(id), "{id}");
+            assert!(!core.delivery_retry_pending(id), "{id}");
+            // Only that one read is owed: a later `Waiting` waits its turn,
+            // still the session's.
+            core.keep_waiting(&registration, &delivery, &waiting);
+            assert!(core.delivery_retry_pending(id), "{id}");
+            assert!(core.delivery_handed_over(id), "{id}");
+            assert!(!core.delivery_holds_later(id), "{id}");
+        }
+        // Without an acknowledgment, `Waiting` still holds later messages.
+        let unacknowledged = Delivery {
+            id: "del_3".into(),
+            reason: Some("dm".into()),
+            ..Delivery::default()
+        };
+        core.keep_waiting(&registration, &unacknowledged, &waiting);
+        assert!(core.delivery_holds_later("del_3"));
+        assert!(!core.delivery_handed_over("del_3"));
+    }
+
+    fn test_core(temp: &tempfile::TempDir) -> Arc<Core> {
         use crate::relay::daemon::{Config, Plugins};
         use crate::relay::paths::CorePaths;
         use crate::relay::push::PushTiming;
-        let temp = tempfile::tempdir().unwrap();
         let config = Config {
             paths: CorePaths::for_socket(temp.path().join("core.sock")).unwrap(),
             home: temp.path().into(),
@@ -554,13 +623,7 @@ mod tests {
             push_timing: PushTiming::default(),
             delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
         };
-        let (core, _signals) = Core::with_plugins(config, Plugins::default());
-        core.hold_delivery_retry("del_1", "agent", Duration::from_secs(60));
-        core.mark_delivery_handed_over("del_1");
-        assert!(core.delivery_retry_pending("del_1"));
-        core.settle_delivery_soon("del_1");
-        assert!(!core.delivery_retry_pending("del_1"));
-        assert!(core.delivery_handed_over("del_1"));
+        Core::with_plugins(config, Plugins::default()).0
     }
 
     #[test]

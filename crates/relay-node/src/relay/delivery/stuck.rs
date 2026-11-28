@@ -25,6 +25,7 @@ impl Core {
     pub(super) fn settled(&self, id: &str) {
         let mut state = self.delivery.lock().unwrap_or_else(PoisonError::into_inner);
         state.retries.remove(id);
+        state.acknowledged.remove(id);
         state.waiting.remove(id);
     }
 
