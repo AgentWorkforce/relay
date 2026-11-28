@@ -48,6 +48,32 @@ pub(crate) fn send_if_loaded_fast(
     )
 }
 
+/// The same dormant Fast path, with an optional exact accepted-turn receipt
+/// for a future authenticated delta publisher. Missing `result.turn.id`
+/// preserves the ordinary delivery result but produces no receipt.
+#[allow(dead_code)]
+pub(crate) fn send_if_loaded_fast_with_receipt(
+    stream: &mut dyn ProxyStream,
+    thread: &str,
+    text: &str,
+    message_id: &str,
+    hide: Hide,
+    timeout: Duration,
+    accepted: &dyn Fn(super::super::TurnReceipt),
+) -> Result<bool, TurnError> {
+    send_with_state(
+        stream,
+        thread,
+        text,
+        message_id,
+        (hide, false),
+        timeout,
+        TurnSpeed::Fast,
+        Some(accepted),
+    )
+    .0
+}
+
 /// Delivers to a registered native spawn, resuming its exact thread when
 /// Codex unloaded it after being idle. The caller must verify that the
 /// registration is still a native spawn and the thread is not archived.
@@ -90,6 +116,7 @@ pub fn send_spawned(
         (hide, true),
         timeout,
         TurnSpeed::Inherit,
+        None,
     );
     if let (Ok(true) | Err(TurnError::InDoubt(_)), Some(state)) = (&result, state) {
         drive::start(stream, state, claim, ended);
@@ -106,7 +133,10 @@ fn send(
     timeout: Duration,
     speed: TurnSpeed,
 ) -> Result<bool, TurnError> {
-    send_with_state(stream, thread, text, message_id, flags, timeout, speed).0
+    send_with_state(
+        stream, thread, text, message_id, flags, timeout, speed, None,
+    )
+    .0
 }
 
 /// As `send`, with the connection's state once a turn was asked for.
@@ -118,6 +148,7 @@ fn send_with_state(
     (hide, resume): (Hide, bool),
     timeout: Duration,
     speed: TurnSpeed,
+    accepted: Option<&dyn Fn(super::super::TurnReceipt)>,
 ) -> (Result<bool, TurnError>, Option<ClientState>) {
     let deadline = Instant::now() + timeout;
     let Ok(mut client) = Client::open(stream, deadline) else {
@@ -157,6 +188,7 @@ fn send_with_state(
         message_id,
         timeout,
         speed,
+        accepted,
     );
     (result, Some(client.into_state()))
 }

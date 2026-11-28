@@ -8,9 +8,20 @@ fn native_fast_tier_is_explicit_and_keeps_the_owner_receipt() {
     let temp = tempfile::tempdir().unwrap();
     let fake = Fake::new(temp.path());
     let router = CodexRouter::new(fake.clone());
+    let receipts = Mutex::new(Vec::new());
     assert_eq!(
-        router.inject_native_existing_fast_guarded(THREAD, "voice-1", "spoken", &|| true),
+        router.inject_native_existing_fast_guarded_with_receipt(
+            THREAD,
+            "voice-1",
+            "spoken",
+            &|| true,
+            &|receipt| receipts.lock().unwrap().push(receipt),
+        ),
         InjectOutcome::Delivered
+    );
+    assert_eq!(
+        *receipts.lock().unwrap(),
+        [crate::relay::codex::TurnReceipt::new(THREAD, "turn-native-1", "voice-1").unwrap()]
     );
     assert_eq!(
         fake.fast_native.lock().unwrap().as_slice(),
@@ -27,6 +38,7 @@ fn native_fast_tier_is_explicit_and_keeps_the_owner_receipt() {
         InjectOutcome::Delivered
     );
     assert_eq!(fake.fast_native.lock().unwrap().len(), 1);
+    assert_eq!(receipts.lock().unwrap().len(), 1);
     assert_eq!(
         router.inject_native_existing_guarded(THREAD, "ordinary-2", "typed", &|| true),
         InjectOutcome::Delivered
@@ -147,6 +159,21 @@ impl CodexRoutes for Fake {
             .unwrap()
             .push((text.into(), id.into(), owner.into()));
         self.result.lock().unwrap().clone()
+    }
+    fn native_window_fast_with_receipt(
+        &self,
+        thread: &str,
+        text: &str,
+        id: &str,
+        owner: &str,
+        admit: &(dyn Fn() -> bool + Send + Sync),
+        accepted: &(dyn Fn(super::super::super::TurnReceipt) + Send + Sync),
+    ) -> Result<bool, TurnError> {
+        let result = self.native_window_fast(thread, text, id, owner, admit);
+        if result == Ok(true) {
+            accepted(super::super::super::TurnReceipt::new(thread, "turn-native-1", id).unwrap());
+        }
+        result
     }
     fn recorded(&self, thread: &str, reference: &str) -> bool {
         self.rollout.lock().unwrap().as_ref().map_or_else(
@@ -377,6 +404,51 @@ fn native_codex_wire_keeps_raw_input_and_existing_window_approval_policy() {
                 }
             }
         })
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn exact_window_fast_turn_emits_only_its_confirmed_turn_receipt() {
+    use crate::relay::codex::ipc::tests::FakeRouter;
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir().unwrap();
+    let socket = temp.path().join("router.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let captured = started.clone();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        FakeRouter {
+            owned: vec![THREAD.into()],
+            refuse: None,
+            started: captured,
+        }
+        .serve(stream);
+    });
+    let receipts = Mutex::new(Vec::new());
+    assert_eq!(
+        hosts::window_native_turn_fast_with_receipt(
+            &socket,
+            THREAD,
+            "voice question",
+            "relay-message-1",
+            "owner-1",
+            &|| true,
+            &|receipt| receipts.lock().unwrap().push(receipt),
+        ),
+        Ok(true)
+    );
+    server.join().unwrap();
+    let requests = started.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]["params"]["turnStart"]["request"]["serviceTierForTurn"],
+        "fast"
+    );
+    assert_eq!(
+        *receipts.lock().unwrap(),
+        [crate::relay::codex::TurnReceipt::new(THREAD, "turn-1", "relay-message-1").unwrap()]
     );
 }
 

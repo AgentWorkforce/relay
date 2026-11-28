@@ -340,6 +340,7 @@ fn start_turn(
     message_id: &str,
     timeout: Duration,
     speed: TurnSpeed,
+    accepted: Option<&dyn Fn(super::TurnReceipt)>,
 ) -> Result<bool, TurnError> {
     let mut turn = json!({"method": "turn/start", "id": TURN_ID, "params": {
         "threadId": thread, "clientUserMessageId": message_id, "input": input,
@@ -402,6 +403,16 @@ fn start_turn(
         return Err(TurnError::InDoubt(
             "Codex returned an unreadable turn response".into(),
         ));
+    }
+    if let (Some(observer), Some(turn_id)) = (
+        accepted,
+        response["result"]["turn"]["id"]
+            .as_str()
+            .filter(|id| !id.is_empty()),
+    ) {
+        if let Some(receipt) = super::TurnReceipt::new(thread, turn_id, message_id) {
+            observer(receipt);
+        }
     }
     Ok(true)
 }
@@ -513,6 +524,7 @@ fn start_thread_state(
         message_id,
         timeout,
         TurnSpeed::Inherit,
+        None,
     ) {
         Ok(true) => Ok(()),
         Ok(false) => Err(TurnError::Refused("Codex's app-server stopped".into())),
@@ -576,7 +588,7 @@ pub fn archive_thread(
 #[cfg(test)]
 pub(crate) mod tests {
     mod spawned;
-    use super::delivery::send_if_loaded_fast;
+    use super::delivery::{send_if_loaded_fast, send_if_loaded_fast_with_receipt};
     use super::*;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
@@ -955,6 +967,47 @@ pub(crate) mod tests {
         // request may never change the next ordinary turn's defaults.
         assert!(turn["params"].get("effort").is_none());
         assert!(turn["params"].get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn only_a_confirmed_turn_id_emits_the_exact_proxy_receipt() {
+        let mut confirmed = FakeAppServer::hosting(
+            &[THREAD],
+            Some(json!({"id": 3, "result": {"turn": {"id": "turn-1"}}})),
+        );
+        let receipts = Mutex::new(Vec::new());
+        assert_eq!(
+            send_if_loaded_fast_with_receipt(
+                &mut confirmed,
+                THREAD,
+                "question",
+                "relay-message-1",
+                Hide::Never,
+                SEND_TIMEOUT,
+                &|receipt| receipts.lock().unwrap().push(receipt),
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            *receipts.lock().unwrap(),
+            [super::super::TurnReceipt::new(THREAD, "turn-1", "relay-message-1").unwrap()]
+        );
+
+        let mut missing_id =
+            FakeAppServer::hosting(&[THREAD], Some(json!({"id": 3, "result": {}})));
+        assert_eq!(
+            send_if_loaded_fast_with_receipt(
+                &mut missing_id,
+                THREAD,
+                "question",
+                "relay-message-2",
+                Hide::Never,
+                SEND_TIMEOUT,
+                &|receipt| receipts.lock().unwrap().push(receipt),
+            ),
+            Ok(true)
+        );
+        assert_eq!(receipts.lock().unwrap().len(), 1);
     }
 
     #[test]

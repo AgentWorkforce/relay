@@ -137,7 +137,7 @@ impl CodexRouter {
         text: &str,
         admit: &(dyn Fn() -> bool + Send + Sync),
     ) -> InjectOutcome {
-        match self.native_attempt(thread, id, text, admit, false) {
+        match self.native_attempt(thread, id, text, admit, false, None) {
             Ok(outcome) => outcome,
             Err(error) => InjectOutcome::InDoubt(error),
         }
@@ -153,7 +153,22 @@ impl CodexRouter {
         text: &str,
         admit: &(dyn Fn() -> bool + Send + Sync),
     ) -> InjectOutcome {
-        match self.native_attempt(thread, id, text, admit, true) {
+        match self.native_attempt(thread, id, text, admit, true, None) {
+            Ok(outcome) => outcome,
+            Err(error) => InjectOutcome::InDoubt(error),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn inject_native_existing_fast_guarded_with_receipt(
+        &self,
+        thread: &str,
+        id: &str,
+        text: &str,
+        admit: &(dyn Fn() -> bool + Send + Sync),
+        accepted: &(dyn Fn(super::super::TurnReceipt) + Send + Sync),
+    ) -> InjectOutcome {
+        match self.native_attempt(thread, id, text, admit, true, Some(accepted)) {
             Ok(outcome) => outcome,
             Err(error) => InjectOutcome::InDoubt(error),
         }
@@ -166,6 +181,7 @@ impl CodexRouter {
         text: &str,
         admit: &(dyn Fn() -> bool + Send + Sync),
         fast: bool,
+        accepted: Option<&(dyn Fn(super::super::TurnReceipt) + Send + Sync)>,
     ) -> Result<InjectOutcome, String> {
         if !valid_input(thread, id, text) {
             return Ok(InjectOutcome::Refused(
@@ -230,7 +246,7 @@ impl CodexRouter {
             Some(true) => return Ok(InjectOutcome::Waiting(BEHIND_QUEUE.into())),
             None => return Ok(InjectOutcome::Waiting(QUEUE_UNREADABLE.into())),
         }
-        self.submit_native(&path, &key, thread, id, text, &bound, admit, fast)
+        self.submit_native(&path, &key, thread, id, text, &bound, admit, fast, accepted)
     }
 
     fn missing_native_owner(
@@ -285,6 +301,7 @@ impl CodexRouter {
         bound: &Entry,
         admit: &(dyn Fn() -> bool + Send + Sync),
         fast: bool,
+        accepted: Option<&(dyn Fn(super::super::TurnReceipt) + Send + Sync)>,
     ) -> Result<InjectOutcome, String> {
         if !admit() {
             return self.cancel_unsent_native(path, key, id);
@@ -308,18 +325,47 @@ impl CodexRouter {
             .owner
             .as_deref()
             .ok_or("The original Codex window is unknown.")?;
+        let observed = Mutex::new(None);
+        let capture = |receipt: super::super::TurnReceipt| {
+            if receipt.thread_id == thread
+                && receipt.client_message_id == id
+                && !receipt.turn_id.is_empty()
+            {
+                *observed
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(receipt);
+            }
+        };
         let result = if fast {
-            self.routes
-                .native_window_fast(thread, text, id, owner, admit)
+            match accepted {
+                Some(_) => self
+                    .routes
+                    .native_window_fast_with_receipt(thread, text, id, owner, admit, &capture),
+                None => self
+                    .routes
+                    .native_window_fast(thread, text, id, owner, admit),
+            }
         } else {
             self.routes.native_window(thread, text, id, owner, admit)
         };
+        let confirmed = result == Ok(true);
         let state = match result {
             Ok(true) => State::Started,
             Ok(false) | Err(TurnError::Refused(_)) => State::Refused,
             Err(TurnError::InDoubt(_)) => State::InDoubt,
         };
         let state = self.save_native(path, key, id, state)?;
+        if confirmed && state == State::Started {
+            if let (Some(observer), Some(receipt)) = (
+                accepted,
+                observed
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take(),
+            ) {
+                observer(receipt);
+            }
+        }
         outcome(&state).ok_or("Codex returned an invalid native receipt.".into())
     }
 

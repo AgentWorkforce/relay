@@ -63,6 +63,25 @@ impl CodexRoutes for SystemCodexRoutes {
             admit,
         )
     }
+    fn native_window_fast_with_receipt(
+        &self,
+        thread: &str,
+        text: &str,
+        message_id: &str,
+        owner: &str,
+        admit: &(dyn Fn() -> bool + Send + Sync),
+        accepted: &(dyn Fn(super::super::TurnReceipt) + Send + Sync),
+    ) -> Result<bool, TurnError> {
+        hosts::window_native_turn_fast_with_receipt(
+            &self.config.ipc_socket,
+            &self.spelled(thread),
+            text,
+            message_id,
+            owner,
+            admit,
+            accepted,
+        )
+    }
     fn recorded(&self, thread: &str, message_ref: &str) -> bool {
         rollout::recorded(&self.config, thread, message_ref)
     }

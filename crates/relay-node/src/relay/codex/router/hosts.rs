@@ -26,6 +26,7 @@ pub(super) fn window_native_turn(
         expected_owner,
         admit,
         false,
+        None,
     )
 }
 
@@ -48,6 +49,29 @@ pub(super) fn window_native_turn_fast(
         expected_owner,
         admit,
         true,
+        None,
+    )
+}
+
+#[allow(dead_code)]
+pub(super) fn window_native_turn_fast_with_receipt(
+    socket: &Path,
+    thread: &str,
+    text: &str,
+    message_id: &str,
+    expected_owner: &str,
+    admit: &(dyn Fn() -> bool + Send + Sync),
+    accepted: &(dyn Fn(super::super::TurnReceipt) + Send + Sync),
+) -> Result<bool, TurnError> {
+    window_native_turn_with_speed(
+        socket,
+        thread,
+        text,
+        message_id,
+        expected_owner,
+        admit,
+        true,
+        Some(accepted),
     )
 }
 
@@ -59,6 +83,7 @@ fn window_native_turn_with_speed(
     expected_owner: &str,
     admit: &(dyn Fn() -> bool + Send + Sync),
     fast: bool,
+    accepted: Option<&(dyn Fn(super::super::TurnReceipt) + Send + Sync)>,
 ) -> Result<bool, TurnError> {
     let mut session = match ipc::Session::connect(socket) {
         Ok(session) => session,
@@ -77,7 +102,14 @@ fn window_native_turn_with_speed(
         session.start_turn(thread, text, message_id, expected_owner, None)
     };
     match started {
-        Ok(_) => Ok(true),
+        Ok(turn) => {
+            if let (Some(observer), Some(turn)) = (accepted, turn.as_deref()) {
+                if let Some(receipt) = super::super::TurnReceipt::new(thread, turn, message_id) {
+                    observer(receipt);
+                }
+            }
+            Ok(true)
+        }
         Err(ipc::IpcError::Rejected(reason)) => Err(TurnError::Refused(reason)),
         Err(error) => Err(TurnError::InDoubt(error.to_string())),
     }

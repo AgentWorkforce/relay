@@ -75,6 +75,14 @@ Streaming requires a second binding after admission: a trusted successful
 Only that accepted turn may publish answer deltas for the Cloud-issued request.
 Producer metadata cannot name an arbitrary turn. Reconnect and replay must
 resume this same mapping, never create another turn or expose a peer's text.
+The staged proxy and native-window Fast seams can observe a `TurnReceipt`
+only after a successful host response containing a nonempty turn ID. The
+native path emits it only after its local at-most-once receipt is saved.
+An older host may confirm a turn without returning its ID; ordinary delivery
+still succeeds, but no delta publisher may use that unbound turn. A production
+publisher must also persist the proxy path's accepted binding before emitting
+anything, authenticate its host to Cloud, and reject a claimed binding from
+the message body or Relaycast metadata.
 
 ## Compatibility and rollout
 
