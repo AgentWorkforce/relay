@@ -7841,10 +7841,34 @@ async fn an_omp_answer_queued_under_the_old_default_is_not_sent() {
             json!({"name": "omp-b", "enabled": null}),
         )
         .await;
+    // Dropped by the setting change itself, before any reply pass: the
+    // queued answer is claimed at once.
+    let replies = h.store()["replies"].clone();
+    let queued = replies
+        .as_array()
+        .and_then(|replies| replies.iter().find(|r| r["messageID"] == message.as_str()));
+    assert_eq!(
+        queued.map(|reply| reply["claimed"].clone()),
+        Some(json!(true)),
+        "{replies}"
+    );
     h.injector.answers.lock().unwrap().insert(
         agent_relay_node::relay::delivery::policy::MessageRef::of(&message),
         "an invented answer".into(),
     );
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(h
+        .fake
+        .calls("POST", &format!("/v1/messages/{message}/replies"))
+        .is_empty());
+    // Back at the default, the queued answer was dropped: turning answers
+    // on again does not send it.
+    client
+        .ok(
+            "agents.reply_setting",
+            json!({"name": "omp-b", "enabled": true}),
+        )
+        .await;
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(h
         .fake
