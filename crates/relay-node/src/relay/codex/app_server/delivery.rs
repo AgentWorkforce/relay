@@ -13,7 +13,65 @@ pub fn send_if_loaded(
     hide: Hide,
     timeout: Duration,
 ) -> Result<bool, TurnError> {
-    send(stream, thread, text, message_id, (hide, false), timeout)
+    send(
+        stream,
+        thread,
+        text,
+        message_id,
+        (hide, false),
+        timeout,
+        TurnSpeed::Inherit,
+    )
+}
+
+/// The narrow fast-tier path for a verified voice delivery. The caller must
+/// validate the Cloud assertion before invoking this; the message body or
+/// sender-supplied metadata is never authority for this option.
+/// Kept dormant until Cloud publishes the post-send attestation route.
+#[allow(dead_code)]
+pub(crate) fn send_if_loaded_fast(
+    stream: &mut dyn ProxyStream,
+    thread: &str,
+    text: &str,
+    message_id: &str,
+    hide: Hide,
+    timeout: Duration,
+) -> Result<bool, TurnError> {
+    send(
+        stream,
+        thread,
+        text,
+        message_id,
+        (hide, false),
+        timeout,
+        TurnSpeed::Fast,
+    )
+}
+
+/// The same dormant Fast path, with an optional exact accepted-turn receipt
+/// for a future authenticated delta publisher. Missing `result.turn.id`
+/// preserves the ordinary delivery result but produces no receipt.
+#[allow(dead_code)]
+pub(crate) fn send_if_loaded_fast_with_receipt(
+    stream: &mut dyn ProxyStream,
+    thread: &str,
+    text: &str,
+    message_id: &str,
+    hide: Hide,
+    timeout: Duration,
+    accepted: &dyn Fn(super::super::TurnReceipt),
+) -> Result<bool, TurnError> {
+    send_with_state(
+        stream,
+        thread,
+        text,
+        message_id,
+        (hide, false),
+        timeout,
+        TurnSpeed::Fast,
+        Some(accepted),
+    )
+    .0
 }
 
 /// Delivers to a registered native spawn, resuming its exact thread when
@@ -27,7 +85,15 @@ pub fn send_to_spawned(
     hide: Hide,
     timeout: Duration,
 ) -> Result<bool, TurnError> {
-    send(stream, thread, text, message_id, (hide, true), timeout)
+    send(
+        stream,
+        thread,
+        text,
+        message_id,
+        (hide, true),
+        timeout,
+        TurnSpeed::Inherit,
+    )
 }
 
 /// A desktop-driven spawned turn of the thread `claim` holds: as
@@ -49,6 +115,8 @@ pub fn send_spawned(
         message_id,
         (hide, true),
         timeout,
+        TurnSpeed::Inherit,
+        None,
     );
     if let (Ok(true) | Err(TurnError::InDoubt(_)), Some(state)) = (&result, state) {
         drive::start(stream, state, claim, ended);
@@ -63,8 +131,12 @@ fn send(
     message_id: &str,
     flags: (Hide, bool),
     timeout: Duration,
+    speed: TurnSpeed,
 ) -> Result<bool, TurnError> {
-    send_with_state(stream, thread, text, message_id, flags, timeout).0
+    send_with_state(
+        stream, thread, text, message_id, flags, timeout, speed, None,
+    )
+    .0
 }
 
 /// As `send`, with the connection's state once a turn was asked for.
@@ -75,6 +147,8 @@ fn send_with_state(
     message_id: &str,
     (hide, resume): (Hide, bool),
     timeout: Duration,
+    speed: TurnSpeed,
+    accepted: Option<&dyn Fn(super::super::TurnReceipt)>,
 ) -> (Result<bool, TurnError>, Option<ClientState>) {
     let deadline = Instant::now() + timeout;
     let Ok(mut client) = Client::open(stream, deadline) else {
@@ -106,7 +180,16 @@ fn send_with_state(
     if hide == Hide::Only && !injected {
         return (Ok(false), None);
     }
-    let result = start_turn(&mut client, &thread, input, injected, message_id, timeout);
+    let result = start_turn(
+        &mut client,
+        &thread,
+        input,
+        injected,
+        message_id,
+        timeout,
+        speed,
+        accepted,
+    );
     (result, Some(client.into_state()))
 }
 

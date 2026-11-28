@@ -31,10 +31,34 @@ pub mod stall;
 pub mod stop_hook;
 pub mod threads;
 pub mod turn_hook;
+// Exact-binding check for Cloud's post-send voice attestation. The network
+// lookup is intentionally not connected until Cloud publishes its route.
+#[allow(dead_code)]
+mod voice;
 
 pub use processes::CodexProcessSession;
 pub use router::{CodexRouter, CodexRoutes, QueueError, SystemCodexRoutes};
 pub use threads::CodexThread;
+
+/// A host-confirmed Codex turn for one delivered Relay message. A missing
+/// turn ID never produces a receipt, even when the ordinary delivery path
+/// considers a turn started.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnReceipt {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub client_message_id: String,
+}
+
+impl TurnReceipt {
+    pub(crate) fn new(thread: &str, turn: &str, message: &str) -> Option<Self> {
+        (!thread.is_empty() && !turn.is_empty() && !message.is_empty()).then(|| Self {
+            thread_id: thread.into(),
+            turn_id: turn.into(),
+            client_message_id: message.into(),
+        })
+    }
+}
 
 use crate::relay::delivery::final_answer::capped;
 use crate::relay::process::ProcessTable;

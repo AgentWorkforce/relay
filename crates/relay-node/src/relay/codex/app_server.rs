@@ -28,6 +28,7 @@ pub mod watch;
 /// The JSON-RPC ids of the requests this client sends.
 const LOADED_ID: i64 = 2;
 const TURN_ID: i64 = 3;
+const TURN_FALLBACK_ID: i64 = 9;
 const INJECT_ID: i64 = 4;
 const THREAD_ID: i64 = 5;
 const ARCHIVE_ID: i64 = 7;
@@ -315,6 +316,16 @@ pub enum Hide {
     Only,
 }
 
+/// An app-server turn's speed. `Fast` must only be selected after Cloud's
+/// voice assertion has been verified against the exact relay delivery. It
+/// does not change the thread's sticky service tier.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TurnSpeed {
+    #[default]
+    Inherit,
+    Fast,
+}
+
 /// Sends `turn/start` with `input` and waits for the host's answer:
 /// `Ok(false)` when the request could not be written whole (a frame whose
 /// write failed or ran out of time is incomplete, and the host acts on whole
@@ -328,10 +339,18 @@ fn start_turn(
     injected: bool,
     message_id: &str,
     timeout: Duration,
+    speed: TurnSpeed,
+    accepted: Option<&dyn Fn(super::TurnReceipt)>,
 ) -> Result<bool, TurnError> {
-    let turn = json!({"method": "turn/start", "id": TURN_ID, "params": {
+    let mut turn = json!({"method": "turn/start", "id": TURN_ID, "params": {
         "threadId": thread, "clientUserMessageId": message_id, "input": input,
     }});
+    if speed == TurnSpeed::Fast {
+        // The installed Codex app-server schema documents this field as
+        // applying only when this request starts a new turn. `serviceTier`
+        // and `effort` are sticky and would change later ordinary turns.
+        turn["params"]["serviceTierForTurn"] = json!("fast");
+    }
     let turn_deadline = Instant::now() + timeout;
     if client.send(&turn, turn_deadline).is_err() {
         // Once the history holds the message, no other route may send it
@@ -343,12 +362,35 @@ fn start_turn(
             false => Ok(false),
         };
     }
-    let response = client
-        .response(TURN_ID, turn_deadline)
-        .map_err(|error| match error.kind() {
-            ErrorKind::TimedOut => TurnError::InDoubt("Codex did not confirm the turn".into()),
-            _ => TurnError::InDoubt(error.to_string()),
-        })?;
+    let mut response =
+        client
+            .response(TURN_ID, turn_deadline)
+            .map_err(|error| match error.kind() {
+                ErrorKind::TimedOut => TurnError::InDoubt("Codex did not confirm the turn".into()),
+                _ => TurnError::InDoubt(error.to_string()),
+            })?;
+    // Older app-servers may reject the per-turn field before starting a
+    // turn. Only an explicit invalid-params error naming that field proves
+    // it is safe to retry the same message without Fast mode. A timeout or
+    // ambiguous error is never retried: the first turn may already exist.
+    if speed == TurnSpeed::Fast
+        && response["error"]["code"].as_i64() == Some(-32602)
+        && response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("serviceTierForTurn"))
+    {
+        turn["id"] = json!(TURN_FALLBACK_ID);
+        turn["params"]
+            .as_object_mut()
+            .unwrap()
+            .remove("serviceTierForTurn");
+        client
+            .send(&turn, turn_deadline)
+            .map_err(|_| TurnError::InDoubt("Codex did not confirm the fallback turn".into()))?;
+        response = client
+            .response(TURN_FALLBACK_ID, turn_deadline)
+            .map_err(|_| TurnError::InDoubt("Codex did not confirm the fallback turn".into()))?;
+    }
     // Only an error the host spelled out is a refusal; anything else
     // (`"error": null`, an unknown shape) does not say the turn did not start.
     if let Some(error) = response
@@ -361,6 +403,16 @@ fn start_turn(
         return Err(TurnError::InDoubt(
             "Codex returned an unreadable turn response".into(),
         ));
+    }
+    if let (Some(observer), Some(turn_id)) = (
+        accepted,
+        response["result"]["turn"]["id"]
+            .as_str()
+            .filter(|id| !id.is_empty()),
+    ) {
+        if let Some(receipt) = super::TurnReceipt::new(thread, turn_id, message_id) {
+            observer(receipt);
+        }
     }
     Ok(true)
 }
@@ -464,7 +516,16 @@ fn start_thread_state(
         created(&thread_id);
     }
     let input = json!([{"type": "text", "text": text}]);
-    let turn = match start_turn(&mut client, &thread_id, input, false, message_id, timeout) {
+    let turn = match start_turn(
+        &mut client,
+        &thread_id,
+        input,
+        false,
+        message_id,
+        timeout,
+        TurnSpeed::Inherit,
+        None,
+    ) {
         Ok(true) => Ok(()),
         Ok(false) => Err(TurnError::Refused("Codex's app-server stopped".into())),
         Err(error) => Err(error),
@@ -527,6 +588,7 @@ pub fn archive_thread(
 #[cfg(test)]
 pub(crate) mod tests {
     mod spawned;
+    use super::delivery::{send_if_loaded_fast, send_if_loaded_fast_with_receipt};
     use super::*;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
@@ -872,9 +934,181 @@ pub(crate) mod tests {
         assert_eq!(turn["method"], "turn/start");
         assert_eq!(turn["params"]["threadId"], THREAD);
         assert_eq!(turn["params"]["clientUserMessageId"], "m1");
+        assert!(turn["params"].get("serviceTierForTurn").is_none());
+        assert!(turn["params"].get("effort").is_none());
         assert_eq!(
             turn["params"]["input"],
             json!([{"type": "text", "text": "hello"}])
+        );
+    }
+
+    #[test]
+    fn verified_voice_turn_uses_fast_tier_only_for_that_turn() {
+        let mut server = FakeAppServer::hosting(
+            &[THREAD],
+            Some(json!({"id": 3, "result": {"turn": {"id": "t"}}})),
+        );
+        let seen = server.seen.clone();
+        assert_eq!(
+            send_if_loaded_fast(
+                &mut server,
+                THREAD,
+                "spoken question",
+                "voice-message-1",
+                Hide::Never,
+                SEND_TIMEOUT,
+            ),
+            Ok(true)
+        );
+        let turn = seen.lock().unwrap().last().unwrap().clone();
+        assert_eq!(turn["params"]["clientUserMessageId"], "voice-message-1");
+        assert_eq!(turn["params"]["serviceTierForTurn"], "fast");
+        // Codex's `effort` and `serviceTier` fields are sticky. A voice
+        // request may never change the next ordinary turn's defaults.
+        assert!(turn["params"].get("effort").is_none());
+        assert!(turn["params"].get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn only_a_confirmed_turn_id_emits_the_exact_proxy_receipt() {
+        let mut confirmed = FakeAppServer::hosting(
+            &[THREAD],
+            Some(json!({"id": 3, "result": {"turn": {"id": "turn-1"}}})),
+        );
+        let receipts = Mutex::new(Vec::new());
+        assert_eq!(
+            send_if_loaded_fast_with_receipt(
+                &mut confirmed,
+                THREAD,
+                "question",
+                "relay-message-1",
+                Hide::Never,
+                SEND_TIMEOUT,
+                &|receipt| receipts.lock().unwrap().push(receipt),
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            *receipts.lock().unwrap(),
+            [super::super::TurnReceipt::new(THREAD, "turn-1", "relay-message-1").unwrap()]
+        );
+
+        let mut missing_id =
+            FakeAppServer::hosting(&[THREAD], Some(json!({"id": 3, "result": {}})));
+        assert_eq!(
+            send_if_loaded_fast_with_receipt(
+                &mut missing_id,
+                THREAD,
+                "question",
+                "relay-message-2",
+                Hide::Never,
+                SEND_TIMEOUT,
+                &|receipt| receipts.lock().unwrap().push(receipt),
+            ),
+            Ok(true)
+        );
+        assert_eq!(receipts.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn older_host_rejects_fast_field_then_gets_one_standard_turn() {
+        let mut server = FakeAppServer::new(|request| match request["method"].as_str() {
+            Some("thread/loaded/list") => Some(server_frame(
+                &json!({"id": 2, "result": {"data": [THREAD]}}),
+            )),
+            Some("turn/start") if request["params"].get("serviceTierForTurn").is_some() => {
+                Some(server_frame(&json!({"id": 3, "error": {
+                    "code": -32602, "message": "unknown field serviceTierForTurn"
+                }})))
+            }
+            Some("turn/start") => Some(server_frame(
+                &json!({"id": 9, "result": {"turn": {"id": "t"}}}),
+            )),
+            _ => None,
+        });
+        let seen = server.seen.clone();
+        assert_eq!(
+            send_if_loaded_fast(
+                &mut server,
+                THREAD,
+                "question",
+                "voice-2",
+                Hide::Never,
+                SEND_TIMEOUT
+            ),
+            Ok(true)
+        );
+        let turns: Vec<_> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["method"] == "turn/start")
+            .cloned()
+            .collect();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0]["params"]["serviceTierForTurn"], "fast");
+        assert!(turns[1]["params"].get("serviceTierForTurn").is_none());
+        assert_eq!(
+            turns[0]["params"]["clientUserMessageId"],
+            turns[1]["params"]["clientUserMessageId"]
+        );
+    }
+
+    #[test]
+    fn ambiguous_fast_error_never_retries_the_turn() {
+        let mut server = FakeAppServer::hosting(
+            &[THREAD],
+            Some(json!({"id": 3, "error": {"code": -32603, "message": "upstream failed"}})),
+        );
+        let seen = server.seen.clone();
+        assert!(matches!(
+            send_if_loaded_fast(
+                &mut server,
+                THREAD,
+                "question",
+                "voice-3",
+                Hide::Never,
+                SEND_TIMEOUT
+            ),
+            Err(TurnError::Refused(_))
+        ));
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request["method"] == "turn/start")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn unrelated_invalid_params_error_never_retries_the_turn() {
+        let mut server = FakeAppServer::hosting(
+            &[THREAD],
+            Some(json!({"id": 3, "error": {
+                "code": -32602, "message": "invalid threadId"
+            }})),
+        );
+        let seen = server.seen.clone();
+        assert!(matches!(
+            send_if_loaded_fast(
+                &mut server,
+                THREAD,
+                "question",
+                "voice-4",
+                Hide::Never,
+                SEND_TIMEOUT
+            ),
+            Err(TurnError::Refused(_))
+        ));
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request["method"] == "turn/start")
+                .count(),
+            1
         );
     }
 

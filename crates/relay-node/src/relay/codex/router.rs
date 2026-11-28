@@ -81,6 +81,33 @@ pub trait CodexRoutes: Send + Sync {
     ) -> Result<bool, TurnError> {
         Ok(false)
     }
+    /// Reserved for an exact Cloud-attested owner voice delivery. Implementers
+    /// must not infer authorization from the message text or Relaycast data.
+    #[allow(dead_code)]
+    fn native_window_fast(
+        &self,
+        _thread: &str,
+        _text: &str,
+        _message_id: &str,
+        _owner: &str,
+        _admit: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<bool, TurnError> {
+        Ok(false)
+    }
+    /// Emits a receipt only when the exact window confirms a turn ID. The
+    /// default can still deliver, but cannot authorize delta publication.
+    #[allow(dead_code)]
+    fn native_window_fast_with_receipt(
+        &self,
+        thread: &str,
+        text: &str,
+        message_id: &str,
+        owner: &str,
+        admit: &(dyn Fn() -> bool + Send + Sync),
+        _accepted: &(dyn Fn(super::TurnReceipt) + Send + Sync),
+    ) -> Result<bool, TurnError> {
+        self.native_window_fast(thread, text, message_id, owner, admit)
+    }
     /// Whether the rollout records a turn for the message carrying
     /// `message_ref`.
     fn recorded(&self, thread: &str, message_ref: &str) -> bool;
