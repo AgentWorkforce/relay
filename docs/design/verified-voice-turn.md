@@ -43,7 +43,8 @@ sufficient.
 
 The uncalled node adapter uses the signed-in account's validated Cloud origin,
 the recipient Relaycast token, and the exact current delivery binding. It sends
-no `senderUserId` claim, accepts only a 200 with all matching fields and a
+no `senderUserId` claim, but compares Cloud's returned user ID with the
+currently signed-in person. It accepts only a 200 with all matching fields and a
 fresh 60-second expiry, and returns false on any denial, mismatch or network
 failure. The native owner-delivery and ordinary proxy paths still need to
 derive that binding from their current registration and connect this lookup
@@ -66,6 +67,13 @@ turns unchanged. The native route places `serviceTierForTurn` in
 installed-host readback must establish that it does before this route is
 enabled. The native receipt still enforces at-most-once submission and an
 exact owner window.
+
+Streaming requires a second binding after admission: a trusted successful
+`turn/start` or native window start must yield the accepted `threadId` and
+`turnId`, with `clientUserMessageId` equal to the issued Relay message ID.
+Only that accepted turn may publish answer deltas for the Cloud-issued request.
+Producer metadata cannot name an arbitrary turn. Reconnect and replay must
+resume this same mapping, never create another turn or expose a peer's text.
 
 ## Compatibility and rollout
 

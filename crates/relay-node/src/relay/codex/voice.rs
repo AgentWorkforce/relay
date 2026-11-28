@@ -104,7 +104,9 @@ pub(crate) async fn lookup(
     else {
         return false;
     };
-    answer.status == 200 && authorized(&answer.body, binding, now)
+    answer.status == 200
+        && authorized(&answer.body, binding, now)
+        && answer.body["senderUserId"].as_str() == account.user_id.as_deref()
 }
 
 #[cfg(test)]
@@ -287,5 +289,13 @@ mod tests {
             ..account
         };
         assert!(!lookup(&wrong_workspace, &token, &BINDING, now()).await);
+
+        let (site_url, _) = serve("200 OK", response());
+        let wrong_person = crate::relay::cloud_session::CloudAccount {
+            site_url,
+            workspace_id: "w1".into(),
+            user_id: Some("other-user".into()),
+        };
+        assert!(!lookup(&wrong_person, &token, &BINDING, now()).await);
     }
 }
