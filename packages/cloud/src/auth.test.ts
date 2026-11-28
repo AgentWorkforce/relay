@@ -1735,7 +1735,12 @@ describe('authFilePath / AGENT_RELAY_HOME isolation', () => {
           return new Response(
             JSON.stringify({
               authenticated: true,
-              user: { id: 'usr_dev', email: 'dev@example.com' },
+              source: 'session',
+              subjectType: 'user',
+              scopes: [],
+              user: { id: 'usr_dev', email: 'dev@example.com', name: null, avatarUrl: null },
+              currentOrganization: null,
+              currentWorkspace: null,
             } satisfies WhoAmIResponse),
             { status: 200, headers: { 'content-type': 'application/json' } }
           );
