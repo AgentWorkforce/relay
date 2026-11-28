@@ -183,6 +183,61 @@ impl Retry {
     }
 }
 
+/// A delivery a session's own queue (the mobile Claude handoff) acknowledged
+/// and that has not settled yet.
+struct Acknowledged {
+    at: Instant,
+    /// The prompt queue read the acknowledgment asked for is still owed: a
+    /// pass in flight when it landed saves its retry after it and would push
+    /// that read back out.
+    read_owed: bool,
+}
+
+/// How long an acknowledgment is remembered for a delivery that never
+/// settles here (its agent left, or it expired from the queue).
+const ACKNOWLEDGED_FOR: Duration = Duration::from_secs(3600);
+
+impl DeliveryState {
+    /// Saves `retry` as `id`'s. A delivery its session's own queue already
+    /// acknowledged stays handed over and holds no later message back,
+    /// whatever the pass saving it read before the acknowledgment (#2296
+    /// review); the first save after the acknowledgment is also made due.
+    /// Returns whether that queue read is owed now.
+    fn save_retry(&mut self, id: &str, mut retry: Retry) -> bool {
+        let mut read_now = false;
+        if let Some(ack) = self.acknowledged.get_mut(id) {
+            retry.handed_over = true;
+            retry.holds_later = false;
+            if std::mem::take(&mut ack.read_owed) {
+                retry.after = Instant::now();
+                read_now = true;
+            }
+        }
+        self.retries.insert(id.to_string(), retry);
+        read_now
+    }
+
+    /// Records that `id`'s session took it from its own queue, and makes a
+    /// pending retry the session's and due now. Returns the agent to read
+    /// again, when `id` has a retry.
+    fn acknowledge(&mut self, id: &str) -> Option<String> {
+        self.acknowledged
+            .retain(|_, ack| ack.at.elapsed() < ACKNOWLEDGED_FOR);
+        self.acknowledged.insert(
+            id.to_string(),
+            Acknowledged {
+                at: Instant::now(),
+                read_owed: true,
+            },
+        );
+        let retry = self.retries.get_mut(id)?;
+        retry.after = Instant::now();
+        retry.handed_over = true;
+        retry.holds_later = false;
+        Some(retry.agent.clone())
+    }
+}
+
 /// What a direct message waits behind.
 pub(crate) const BEHIND_EARLIER: &str =
     "Waiting — behind an earlier message to this session that has not gone in yet";
@@ -342,6 +397,10 @@ pub struct DeliveryState {
     /// Deliveries tried and not yet settled, by delivery id. Dropped once
     /// a delivery settles, leaves its queue, or its agent is removed.
     retries: HashMap<String, Retry>,
+    /// Deliveries a session's own queue acknowledged that have not settled,
+    /// by delivery id (`DeliveryState::acknowledge`). Dropped once the
+    /// delivery settles, or after `ACKNOWLEDGED_FOR`.
+    acknowledged: HashMap<String, Acknowledged>,
     /// One delayed integration retry per name and immutable agent identity.
     integration_retries: HashMap<String, String>,
     /// Deliveries waiting to go into their session (`stuck`).
@@ -1686,7 +1745,7 @@ impl Core {
                 // tried again shortly (a briefly locked queue or a restarting
                 // session usually clears in seconds), and it expires there if
                 // the session never comes back.
-                let units = {
+                let (units, read_now) = {
                     let mut state = self.delivery.lock().unwrap();
                     let failures = state
                         .retries
@@ -1701,11 +1760,14 @@ impl Core {
                         failures,
                         delivery,
                     );
-                    // It certainly did not arrive: later ones wait behind it.
+                    // It did not arrive here: later ones wait behind it,
+                    // unless its session already took it from its own queue.
                     retry.holds_later = true;
-                    state.retries.insert(delivery.id.clone(), retry);
-                    units
+                    (units, state.save_retry(&delivery.id, retry))
                 };
+                if read_now {
+                    self.request_drain(&registration.name);
+                }
                 self.drain_later(registration, units + 0.2);
                 self.record(
                     registration,
@@ -1792,7 +1854,7 @@ impl Core {
             return;
         };
         self.note_waiting(registration, delivery, outcome);
-        {
+        let read_now = {
             let mut state = self.delivery.lock().unwrap();
             let delay = self.config.delivery_timing.retry_unit.mul_f64(5.0);
             let mut retry = Retry::new(&registration.name, Instant::now() + delay, 0, delivery);
@@ -1803,7 +1865,10 @@ impl Core {
                 },
                 _ => retry.handed_over = true,
             }
-            state.retries.insert(delivery.id.clone(), retry);
+            state.save_retry(&delivery.id, retry)
+        };
+        if read_now {
+            self.request_drain(&registration.name);
         }
         self.drain_later(registration, 5.2);
         self.record_settled(
