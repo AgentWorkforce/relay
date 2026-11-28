@@ -338,6 +338,7 @@ describe('project workspace key resolution', () => {
     expect(resolveWorkspaceSelection({ projectDataDir: dataDir, env })).toMatchObject({
       key: 'rk_global',
       source: 'store',
+      workspaceName: 'global',
       projectDataDir: dataDir,
       projectSessionPresent: false,
     });

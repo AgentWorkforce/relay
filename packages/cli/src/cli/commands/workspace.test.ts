@@ -58,6 +58,7 @@ function createHarness() {
     createWorkspaceRelay: vi.fn() as never,
     createWorkspace: vi.fn() as never,
     desktopPresent: vi.fn(async () => false),
+    saveWorkspaceKey: vi.fn(),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
@@ -263,6 +264,52 @@ describe('registerWorkspaceCommands', () => {
     });
     expect(deps.error).toHaveBeenCalledWith('⚠  Active workspace changed: default → json-workspace');
   });
+
+  it('workspace create --no-switch stores the key without switching active workspace or pinning the project', async () => {
+    vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+      active: 'default',
+      workspaces: { default: { key: 'rk_live_default' } },
+    });
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValueOnce({
+      workspaceKey: 'rk_live_throwaway',
+    } as never);
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'throwaway', '--no-switch']);
+
+    expect(deps.saveWorkspaceKey).toHaveBeenCalledWith('throwaway', 'rk_live_throwaway');
+    expect(persistWorkspaceSession).not.toHaveBeenCalled();
+    expect(deps.error).not.toHaveBeenCalled();
+    expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]))).toEqual({
+      name: 'throwaway',
+      workspaceKey: 'rk_live_…away',
+    });
+  });
+
+  it.each(['default', 'prev'])(
+    'workspace create --no-switch rejects existing local workspace "%s" before provisioning remotely',
+    async (existingName) => {
+      vi.mocked(readWorkspaceStore).mockReturnValueOnce({
+        active: 'default',
+        previous: 'prev',
+        workspaces: {
+          default: { key: 'rk_live_default' },
+          prev: { key: 'rk_live_prev' },
+        },
+      });
+      const { program, deps } = createHarness();
+
+      await expect(
+        program.parseAsync(['node', 'agent-relay', 'workspace', 'create', existingName, '--no-switch'])
+      ).rejects.toThrow('exit:1');
+
+      expect(deps.createWorkspace).not.toHaveBeenCalled();
+      expect(deps.saveWorkspaceKey).not.toHaveBeenCalled();
+      expect(deps.error).toHaveBeenCalledWith(
+        expect.stringContaining(`Workspace "${existingName}" already exists in the local store`)
+      );
+    }
+  );
 
   it('workspace create rejects a blank name before provisioning a remote workspace', async () => {
     const { program, deps } = createHarness();

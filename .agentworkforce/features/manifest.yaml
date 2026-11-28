@@ -860,7 +860,7 @@ categories:
 
       - id: workspace-create
         name: Create Workspace
-        cli: relay workspace create <name> [--base-url <url>]
+        cli: relay workspace create <name> [--base-url <url>] [--no-switch]
         description: Create a new workspace and store its key
         location: packages/cli/src/cli/commands/workspace.ts
         verify_tier: 5

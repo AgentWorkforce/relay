@@ -181,6 +181,41 @@ export function persistWorkspaceSession(
   };
 }
 
+/**
+ * Store a named workspace key in the machine-global workspace store without
+ * changing the active workspace or pinning the current project.
+ *
+ * Refuses to overwrite an existing entry so `--no-switch` cannot silently
+ * replace the key behind an active or previous workspace alias.
+ *
+ * @param name - Local workspace alias to create in the store.
+ * @param workspaceKey - Workspace key minted for that alias.
+ * @param options - Optional environment and project path overrides.
+ * @returns Nothing; writes the updated store to disk.
+ */
+export function saveWorkspaceKey(
+  name: string,
+  workspaceKey: string,
+  options: WorkspaceSessionOptions = {}
+): void {
+  const trimmedKey = workspaceKey.trim();
+  if (!trimmedKey) {
+    throw new Error('Workspace key is required.');
+  }
+  const workspaceName = validateWorkspaceSessionName(name);
+  const store = readWorkspaceStore(options.env);
+  if (Object.hasOwn(store.workspaces, workspaceName)) {
+    throw new Error(
+      `Workspace "${workspaceName}" already exists in the local store. Choose a new name or omit --no-switch to update it.`
+    );
+  }
+  saveNamedWorkspace(workspaceName, trimmedKey, {
+    ...options,
+    workspaceKey: trimmedKey,
+    activate: 'never',
+  });
+}
+
 /** Save a named workspace; `setWorkspaceKey` also activates the first one, which `never` rules out. */
 function saveNamedWorkspace(name: string, key: string, options: PersistWorkspaceSessionOptions): void {
   if (options.activate !== 'never') {
