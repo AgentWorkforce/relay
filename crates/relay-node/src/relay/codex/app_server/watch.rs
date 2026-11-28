@@ -32,6 +32,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+pub(crate) mod answer;
+
 /// How long the handshake and the first listing may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long one read waits before the loop checks its retries and target.
@@ -365,6 +367,8 @@ struct Shared {
     changed: Condvar,
     /// The Codex to run `app-server proxy` with, and its homes.
     target: Mutex<Option<Target>>,
+    /// Advisory answer text for explicitly armed, exact Relay turns only.
+    answers: Mutex<answer::AnswerTap>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -381,6 +385,7 @@ fn shared() -> &'static Arc<Shared> {
             watch: Mutex::new(None),
             changed: Condvar::new(),
             target: Mutex::new(None),
+            answers: Mutex::new(answer::AnswerTap::default()),
         })
     })
 }
@@ -451,6 +456,35 @@ pub fn vouch(thread: &str, call: &str, spawned: &Spawned, wait: Duration) -> boo
     }
 }
 
+/// Arm an exact turn after its `turn/start` response has confirmed the Relay
+/// `clientUserMessageId`. The caller must verify the person, workspace and
+/// pinned session before invoking this; the watcher never treats message
+/// metadata or text as authorization. No production caller exists yet.
+#[allow(dead_code)] // Awaiting the verified Cloud intent and host turn-ID integration.
+pub(crate) fn arm_answer(thread: &str, turn: &str, message_id: &str, request_id: &str) -> bool {
+    shared()
+        .answers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .arm(thread, turn, message_id, request_id)
+}
+
+/// Take advisory deltas for the exact request. An ingress must authorize its
+/// consumer separately; this internal seam cannot publish to a person.
+#[allow(dead_code)] // Awaiting the caller-scoped Cloud stream ingress.
+pub(crate) fn take_answer(
+    thread: &str,
+    turn: &str,
+    message_id: &str,
+    request_id: &str,
+) -> Vec<answer::AnswerDelta> {
+    shared()
+        .answers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take(thread, turn, message_id, request_id)
+}
+
 /// Test only: the watch as connected and reporting `thread` running `call`
 /// as `argv`, started at `started_ms`.
 #[cfg(test)]
@@ -482,6 +516,11 @@ fn run(shared: &Shared, runner: &dyn CodexRunner) {
             None => Err(io::Error::new(ErrorKind::NotFound, "no Codex to ask")),
         };
         *shared.watch.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        shared
+            .answers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .disconnect();
         shared.changed.notify_all();
         let retarget = matches!(&outcome, Err(error) if error.kind() == ErrorKind::Interrupted);
         if let Err(error) = outcome {
@@ -539,6 +578,12 @@ fn watch_until_closed(
             .drain(..)
             .chain(client.notifications.drain(..))
             .collect();
+        {
+            let mut answers = shared.answers.lock().unwrap_or_else(|e| e.into_inner());
+            for message in &messages {
+                answers.observe(message);
+            }
+        }
         // Server requests (approvals) are never this watcher's to answer.
         client.requests.clear();
         let now = Instant::now();
