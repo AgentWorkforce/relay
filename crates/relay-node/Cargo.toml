@@ -76,7 +76,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 # The TLS configuration every WebSocket connect shares, with the platform's
 # roots read once (src/relay/websocket_tls.rs); the versions and features
 # tokio-tungstenite already links.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 # The local OpenClaw Gateway (src/relay/openclaw.rs): a blocking WebSocket
 # client on the version tokio-tungstenite already links, Ed25519 device

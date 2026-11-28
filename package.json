@@ -85,7 +85,6 @@
     "@agentworkforce/runtime": "^4.1.23",
     "@eslint/js": "^10.0.1",
     "@relaycast/sdk": "^8.0.7",
-    "@relayfile/adapter-github": "0.5.9",
     "@relayfile/relay-helpers": "^0.4.6",
     "@relayflows/sdk": "2.0.66",
     "@testing-library/jest-dom": "^6.9.1",
@@ -126,8 +125,10 @@
     "smol-toml": "^1.7.1",
     "tar": "^7.5.22",
     "@relayflows/sdk": {
+      "re2js": "2.8.7",
       "@agent-relay/sdk": "18.17.0",
       "@agent-relay/harness-driver": "17.2.1"
-    }
+    },
+    "minimatch@^10.0.3": "^11.0.9"
   }
 }
