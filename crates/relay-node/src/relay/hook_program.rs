@@ -15,12 +15,18 @@
 //! at each core start before the hook is refreshed. The command never
 //! changes, so the trust Codex recorded stays.
 //!
-//! The copy is used only when it is safe to: the folder is the core's
-//! private data folder (made by `create_private_dir_all`, owned by this
-//! person, never a link or junction), and the copy is a regular file of
-//! exactly this probe's contents, checked again on every start. Anything
-//! else there, and any failure, leaves the hook naming the running probe as
-//! before. Nothing here widens who may run or replace the copy.
+//! The copy is used only when no one else can replace it. Before anything
+//! is written, the folder and every folder above it are read from their
+//! Windows access lists: none may be a link or junction, each must be owned
+//! by this person, SYSTEM, Administrators or TrustedInstaller, and no one
+//! else may be allowed to write into the folder or to delete, rename or
+//! re-permission it or anything above it. The copy itself must be a regular
+//! file of exactly this probe's contents with the same owners and no one
+//! else allowed to change it, checked again on every start. An access list
+//! that cannot be read, or that holds an entry this check cannot judge,
+//! counts as shared. In any of those cases, and on any failure, the hook
+//! names the installed probe as before. Nothing here changes an access list
+//! or widens who may run or replace the copy.
 
 use std::fs;
 use std::io::{self, Read};
@@ -60,11 +66,14 @@ pub fn keep_copy(probe: &Path, dir: &Path) -> io::Result<PathBuf> {
     if !folder.is_dir()
         || folder.file_type().is_symlink()
         || !crate::platform::fs::owned_by_current_user(&folder)
+        || !crate::platform::fs::private_to_owner(&folder, 0o022)
     {
         return Err(io::Error::other(
             "the copy's folder is not a private folder of this person's",
         ));
     }
+    #[cfg(windows)]
+    windows::private_folder(dir)?;
     let copy = dir.join(name);
     match fs::symlink_metadata(&copy) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
@@ -72,13 +81,19 @@ pub fn keep_copy(probe: &Path, dir: &Path) -> io::Result<PathBuf> {
                 "something other than the copy is in its place",
             ));
         }
-        Ok(_) if same_contents(probe, &copy).unwrap_or(false) => return Ok(copy),
+        Ok(_) if same_contents(probe, &copy).unwrap_or(false) => {
+            #[cfg(windows)]
+            windows::private_file(&copy)?;
+            return Ok(copy);
+        }
         Ok(_) | Err(_) => {}
     }
     replace(probe, &copy)?;
     if !same_contents(probe, &copy)? {
         return Err(io::Error::other("the copy does not match the probe"));
     }
+    #[cfg(windows)]
+    windows::private_file(&copy)?;
     Ok(copy)
 }
 
@@ -147,6 +162,216 @@ fn read_full(file: &mut fs::File, buffer: &mut [u8]) -> io::Result<usize> {
     Ok(filled)
 }
 
+/// Whether a folder or file on Windows can be changed by no one but this
+/// person and the system's own accounts, read from its access list.
+#[cfg(windows)]
+mod windows {
+    use std::ffi::c_void;
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::MetadataExt;
+    use std::path::Path;
+    use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        GetAce, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    };
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    const INHERIT_ONLY_ACE: u8 = 0x08;
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    /// The denying entry types: skipping one only overstates what others
+    /// may do, so the check stays on the safe side.
+    const DENIED_ACE_TYPES: [u8; 4] = [1, 6, 10, 12];
+
+    const FILE_WRITE_DATA: u32 = 0x2; // adding a file, on a folder
+    const FILE_APPEND_DATA: u32 = 0x4; // adding a folder, on a folder
+    const FILE_DELETE_CHILD: u32 = 0x40;
+    const DELETE: u32 = 0x1_0000;
+    const WRITE_DAC: u32 = 0x4_0000;
+    const WRITE_OWNER: u32 = 0x8_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+
+    /// What no one else may do to the copy or the folder holding it:
+    /// write, add, delete, rename or re-permission.
+    const LEAF_RISK: u32 = FILE_WRITE_DATA
+        | FILE_APPEND_DATA
+        | FILE_DELETE_CHILD
+        | DELETE
+        | WRITE_DAC
+        | WRITE_OWNER
+        | GENERIC_WRITE
+        | GENERIC_ALL;
+    /// What no one else may do to a folder above it: delete, rename or
+    /// re-permission it or its children. Adding entries is allowed, as
+    /// `C:\` and `C:\Users` allow it to every signed-in person.
+    const ANCESTOR_RISK: u32 = FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_ALL;
+
+    /// SYSTEM, Administrators and TrustedInstaller, which can change any
+    /// file anyway; CREATOR OWNER and OWNER RIGHTS, which stand for the
+    /// owner, who is checked to be trusted first.
+    const SYSTEM_SIDS: [&str; 5] = [
+        "S-1-5-18",
+        "S-1-5-32-544",
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+        "S-1-3-0",
+        "S-1-3-4",
+    ];
+
+    /// `dir` and every folder above it: see the module comment.
+    pub fn private_folder(dir: &Path) -> io::Result<()> {
+        let user = crate::relay::peer::current_user_sid()?;
+        let dir = std::path::absolute(dir)?;
+        for (index, folder) in dir.ancestors().enumerate() {
+            let leaf = index == 0;
+            let risk = if leaf { LEAF_RISK } else { ANCESTOR_RISK };
+            check(folder, &user, risk, leaf)?;
+        }
+        Ok(())
+    }
+
+    /// The copy itself.
+    pub fn private_file(file: &Path) -> io::Result<()> {
+        let user = crate::relay::peer::current_user_sid()?;
+        check(&std::path::absolute(file)?, &user, LEAF_RISK, false)
+    }
+
+    fn shared(path: &Path, why: &str) -> io::Error {
+        io::Error::other(format!("{} {why}", path.display()))
+    }
+
+    /// One folder or file. `inherited_too` also judges the entries that only
+    /// pass to what is created inside, as the copy is.
+    fn check(path: &Path, user: &str, risk: u32, inherited_too: bool) -> io::Result<()> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(shared(path, "is a link or junction"));
+        }
+        let trusted = |sid: &str| {
+            sid.eq_ignore_ascii_case(user)
+                || SYSTEM_SIDS
+                    .iter()
+                    .any(|known| sid.eq_ignore_ascii_case(known))
+        };
+        let security = Security::read(path)?;
+        if !trusted(&security.owner()?) {
+            return Err(shared(path, "is owned by someone else"));
+        }
+        let Some(dacl) = security.dacl() else {
+            return Err(shared(path, "has no access list, so anyone may change it"));
+        };
+        // SAFETY: `dacl` is the valid ACL inside the descriptor `security`
+        // holds; it is only read while `security` lives.
+        let count = unsafe { (*dacl).AceCount };
+        for index in 0..u32::from(count) {
+            let mut ace: *mut c_void = std::ptr::null_mut();
+            // SAFETY: `index` is below the ACL's count; `ace` receives a
+            // pointer into the same ACL.
+            if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: every ACE starts with an ACE_HEADER.
+            let header = unsafe { std::ptr::read_unaligned(ace.cast::<ACE_HEADER>()) };
+            if DENIED_ACE_TYPES.contains(&header.AceType) {
+                continue;
+            }
+            if header.AceType != ACCESS_ALLOWED_ACE_TYPE {
+                return Err(shared(path, "has an access entry this check cannot judge"));
+            }
+            if !inherited_too && header.AceFlags & INHERIT_ONLY_ACE != 0 {
+                continue;
+            }
+            // SAFETY: an ACCESS_ALLOWED_ACE, whose SID starts at SidStart
+            // and lies within the ACE.
+            let (mask, sid) = unsafe {
+                let allowed = ace.cast::<ACCESS_ALLOWED_ACE>();
+                (
+                    std::ptr::read_unaligned(std::ptr::addr_of!((*allowed).Mask)),
+                    std::ptr::addr_of_mut!((*allowed).SidStart).cast::<c_void>(),
+                )
+            };
+            if mask & risk != 0 && !trusted(&sid_string(sid)?) {
+                return Err(shared(path, "lets someone else change or replace it"));
+            }
+        }
+        Ok(())
+    }
+
+    /// A security descriptor read from a path, freed on drop.
+    struct Security {
+        descriptor: PSECURITY_DESCRIPTOR,
+        owner: PSID,
+        dacl: *mut ACL,
+    }
+
+    impl Security {
+        fn read(path: &Path) -> io::Result<Security> {
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut security = Security {
+                descriptor: std::ptr::null_mut(),
+                owner: std::ptr::null_mut(),
+                dacl: std::ptr::null_mut(),
+            };
+            // SAFETY: `wide` is NUL-terminated and outlives the call; on
+            // success `descriptor` is LocalAlloc'd (freed in Drop) and the
+            // owner and DACL point into it.
+            let status = unsafe {
+                GetNamedSecurityInfoW(
+                    wide.as_ptr(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                    &mut security.owner,
+                    std::ptr::null_mut(),
+                    &mut security.dacl,
+                    std::ptr::null_mut(),
+                    &mut security.descriptor,
+                )
+            };
+            if status != ERROR_SUCCESS {
+                return Err(io::Error::from_raw_os_error(status as i32));
+            }
+            Ok(security)
+        }
+
+        fn owner(&self) -> io::Result<String> {
+            if self.owner.is_null() {
+                return Err(io::Error::other("the access list names no owner"));
+            }
+            sid_string(self.owner)
+        }
+
+        fn dacl(&self) -> Option<*mut ACL> {
+            (!self.dacl.is_null()).then_some(self.dacl)
+        }
+    }
+
+    impl Drop for Security {
+        fn drop(&mut self) {
+            // SAFETY: allocated by GetNamedSecurityInfoW and freed once.
+            unsafe { LocalFree(self.descriptor) };
+        }
+    }
+
+    fn sid_string(sid: PSID) -> io::Result<String> {
+        let mut text: *mut u16 = std::ptr::null_mut();
+        // SAFETY: `sid` is valid for the call; on success `text` is a
+        // LocalAlloc'd NUL-terminated string, read once and freed once.
+        unsafe {
+            if ConvertSidToStringSidW(sid, &mut text) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let length = (0..).take_while(|&index| *text.add(index) != 0).count();
+            let string = String::from_utf16_lossy(std::slice::from_raw_parts(text, length));
+            LocalFree(text.cast());
+            Ok(string)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,9 +382,28 @@ mod tests {
         path
     }
 
+    /// A folder to work in that no one else may change. On Windows that is
+    /// not `%TEMP%`, which a sandbox (Codex's `CodexSandboxUsers`) may be
+    /// allowed to modify, so the folder is made in the profile and given an
+    /// access list of its own.
+    fn temp() -> tempfile::TempDir {
+        #[cfg(windows)]
+        {
+            let home = crate::platform::home_dir().unwrap();
+            let dir = tempfile::Builder::new()
+                .prefix(".agent-relay-hook-test-")
+                .tempdir_in(home)
+                .unwrap();
+            access_lists::set(dir.path(), access_lists::PRIVATE);
+            dir
+        }
+        #[cfg(not(windows))]
+        tempfile::tempdir().unwrap()
+    }
+
     #[test]
     fn a_copy_is_made_and_kept_at_one_path_across_updates() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = temp();
         let old_release = temp.path().join("2026.11.21");
         let new_release = temp.path().join("2026.11.28");
         fs::create_dir_all(&old_release).unwrap();
@@ -179,7 +423,7 @@ mod tests {
 
     #[test]
     fn an_up_to_date_copy_is_left_alone() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = temp();
         let source = probe(temp.path(), b"build");
         let data = temp.path().join("bin");
         let copy = keep_copy(&source, &data).unwrap();
@@ -191,7 +435,7 @@ mod tests {
 
     #[test]
     fn a_folder_in_the_copys_place_is_never_replaced() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = temp();
         let source = probe(temp.path(), b"build");
         let data = temp.path().join("bin");
         fs::create_dir_all(data.join("agent-relay-probe.exe")).unwrap();
@@ -202,7 +446,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_link_in_the_copys_place_is_never_followed_or_replaced() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = temp();
         let source = probe(temp.path(), b"build");
         let elsewhere = temp.path().join("elsewhere");
         fs::write(&elsewhere, b"someone else's").unwrap();
@@ -216,7 +460,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_linked_folder_is_refused() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = temp();
         let source = probe(temp.path(), b"build");
         let real = temp.path().join("real");
         fs::create_dir_all(&real).unwrap();
@@ -231,7 +475,7 @@ mod tests {
         if cfg!(windows) {
             return;
         }
-        let temp = tempfile::tempdir().unwrap();
+        let temp = temp();
         let source = probe(temp.path(), b"build");
         assert_eq!(stable(&source, &temp.path().join("data")), source);
         assert!(!temp.path().join("data").exists());
@@ -243,7 +487,7 @@ mod tests {
         // Windows will not overwrite an open program but lets it be renamed;
         // an open handle without delete sharing stands in for a running hook.
         use std::os::windows::fs::OpenOptionsExt;
-        let temp = tempfile::tempdir().unwrap();
+        let temp = temp();
         let data = temp.path().join("bin");
         let old = temp.path().join("old");
         fs::create_dir_all(&old).unwrap();
@@ -258,5 +502,171 @@ mod tests {
         let replaced = keep_copy(&probe(&new, b"new build"), &data).unwrap();
         assert_eq!(replaced, copy);
         assert_eq!(fs::read(&replaced).unwrap(), b"new build");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_others_may_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = temp();
+        let source = probe(temp.path(), b"build");
+        let data = temp.path().join("bin");
+        fs::create_dir_all(&data).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(keep_copy(&source, &data).is_err());
+        assert!(!data.join("agent-relay-probe.exe").exists());
+    }
+
+    /// Access lists set from SDDL, as an administrator or another program
+    /// might leave them; `{me}` stands for this person's SID.
+    #[cfg(windows)]
+    mod access_lists {
+        use super::*;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::{SetFileSecurityW, DACL_SECURITY_INFORMATION};
+
+        const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
+
+        /// Only this person and SYSTEM, passed to what is created inside.
+        pub(super) const PRIVATE: &str = "D:P(A;OICI;FA;;;{me})(A;OICI;FA;;;SY)";
+
+        pub(super) fn set(path: &Path, sddl: &str) {
+            let me = crate::relay::peer::current_user_sid().unwrap();
+            let sddl: Vec<u16> = sddl
+                .replace("{me}", &me)
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut descriptor = std::ptr::null_mut();
+            // SAFETY: both strings are NUL-terminated and outlive the calls;
+            // the descriptor is LocalAlloc'd by the conversion and freed once.
+            unsafe {
+                assert_ne!(
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        sddl.as_ptr(),
+                        SDDL_REVISION_1,
+                        &mut descriptor,
+                        std::ptr::null_mut(),
+                    ),
+                    0,
+                    "{}",
+                    io::Error::last_os_error()
+                );
+                let set = SetFileSecurityW(
+                    wide.as_ptr(),
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    descriptor,
+                );
+                let error = io::Error::last_os_error();
+                LocalFree(descriptor);
+                assert_ne!(set, 0, "{error}");
+            }
+        }
+
+        /// A probe, and a data folder whose `bin` folder exists with `sddl`.
+        fn shared_bin(temp: &Path, sddl: &str) -> (PathBuf, PathBuf) {
+            let source = probe(temp, b"build");
+            let data = temp.join("app-data");
+            fs::create_dir_all(data.join(DIR)).unwrap();
+            set(&data.join(DIR), sddl);
+            (source, data)
+        }
+
+        #[test]
+        fn a_private_folder_takes_the_copy() {
+            let temp = temp();
+            let (source, data) = shared_bin(temp.path(), PRIVATE);
+            let copy = stable(&source, &data);
+            assert_eq!(copy, data.join(DIR).join("agent-relay-probe.exe"));
+            assert_eq!(fs::read(&copy).unwrap(), b"build");
+        }
+
+        #[test]
+        fn a_folder_others_may_write_is_refused_before_anything_is_written() {
+            let temp = temp();
+            // Built-in Users may modify.
+            let (source, data) = shared_bin(
+                temp.path(),
+                "D:P(A;OICI;FA;;;{me})(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;BU)",
+            );
+            assert_eq!(
+                stable(&source, &data),
+                source,
+                "the hook names the installed probe"
+            );
+            assert!(fs::read_dir(data.join(DIR)).unwrap().next().is_none());
+        }
+
+        #[test]
+        fn a_copy_in_a_folder_that_became_shared_is_neither_used_nor_touched() {
+            let temp = temp();
+            let (source, data) = shared_bin(temp.path(), PRIVATE);
+            let copy = stable(&source, &data);
+            assert_ne!(copy, source);
+            // Everyone may now add and delete files there.
+            set(&data.join(DIR), "D:P(A;OICI;FA;;;{me})(A;;0x47;;;WD)");
+            let newer = probe(&temp.path().join("new").tap_create(), b"new build");
+            assert_eq!(stable(&newer, &data), newer);
+            assert_eq!(stable(&source, &data), source, "even while up to date");
+            assert_eq!(fs::read(&copy).unwrap(), b"build");
+        }
+
+        #[test]
+        fn a_folder_above_that_lets_others_delete_or_rename_is_refused() {
+            let temp = temp();
+            let (source, data) = shared_bin(temp.path(), PRIVATE);
+            // Users may delete the data folder's children (so rename `bin`)
+            // without any right on `bin` itself.
+            set(
+                &data,
+                "D:P(A;;FA;;;{me})(A;;FA;;;SY)(A;;0x1200a9;;;BU)(A;;0x40;;;BU)",
+            );
+            assert_eq!(stable(&source, &data), source);
+            assert!(!data.join(DIR).join("agent-relay-probe.exe").exists());
+        }
+
+        #[test]
+        fn a_copy_others_may_replace_is_refused() {
+            let temp = temp();
+            let (source, data) = shared_bin(temp.path(), PRIVATE);
+            let copy = stable(&source, &data);
+            set(&copy, "D:P(A;;FA;;;{me})(A;;0x120116;;;BU)"); // Users may write it
+            assert_eq!(stable(&source, &data), source);
+        }
+
+        #[test]
+        fn an_access_list_that_cannot_be_judged_counts_as_shared() {
+            let temp = temp();
+            // A conditional entry: who it admits depends on claims this
+            // check does not evaluate, even though it grants only reading.
+            let (source, data) = shared_bin(
+                temp.path(),
+                "D:P(A;OICI;FA;;;{me})(XA;OICI;FR;;;WD;(Member_of {SID(BA)}))",
+            );
+            assert_eq!(stable(&source, &data), source);
+            // No access list at all lets anyone do anything.
+            let (source, data) = shared_bin(
+                &temp.path().join("other").tap_create(),
+                "D:NO_ACCESS_CONTROL",
+            );
+            assert_eq!(stable(&source, &data), source);
+            assert!(!data.join(DIR).join("agent-relay-probe.exe").exists());
+        }
+
+        trait TapCreate {
+            fn tap_create(self) -> Self;
+        }
+
+        impl TapCreate for PathBuf {
+            fn tap_create(self) -> Self {
+                fs::create_dir_all(&self).unwrap();
+                self
+            }
+        }
     }
 }
