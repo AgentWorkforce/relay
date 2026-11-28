@@ -46,6 +46,7 @@ pub fn local_config(
 ) -> LocalConfig {
     let mut local = LocalConfig::from_env(env, client_home);
     if is_development(config) {
+        local.development_build = true;
         local.claude.dirs =
             crate::relay::claude_dirs::ClaudeDirs::development(&config.app_data_dir);
     }
@@ -97,6 +98,25 @@ pub fn plugins_with_options(
     if clients.as_ref().is_some_and(|clients| !clients.safe) {
         return Plugins::default();
     }
+    if development {
+        let isolated_profile = clients.is_some();
+        migrate_legacy_dev_inbox(
+            &local.devin.data_dir.join("relay").join("inbox-dev.d"),
+            &local.devin.inbox(),
+            isolated_profile,
+        );
+        migrate_legacy_dev_inbox(
+            &local
+                .cursor
+                .home
+                .join(".agentworkforce")
+                .join("desktop")
+                .join("cursor")
+                .join("inbox-dev.d"),
+            &local.cursor.inbox(),
+            isolated_profile,
+        );
+    }
     // Pi's and OMP's extension is one file every build would share, so a
     // profile build never writes it, not even at start.
     let install_pi_at_start = install_pi_at_start && !matches!(build, outbound::Build::Profile(_));
@@ -146,9 +166,6 @@ pub fn plugins_with_options(
     }
     let grok_settings = Arc::new(GrokSettings::new(&local.grok));
     let opencode_settings = Arc::new(OpenCodeSettings::new(&local.opencode));
-    // Agent Relay Dev stages into and drains its own Devin inbox, never
-    // production's queue.
-    local.devin = local.devin.development(development);
     local.sources = sources;
     // The person's OpenClaw Gateway, reached on loopback; on unless
     // `AGENT_RELAY_ENABLE_OPENCLAW=0`, and listed only while it answers.
@@ -179,19 +196,16 @@ pub fn plugins_with_options(
         &local.devin,
         devin::DevinSettings::command_for(
             &std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
-            development,
         ),
     ));
-    // Agent Relay Dev stages into and drains its own Cursor, Copilot, and
-    // Antigravity inboxes too.
-    local.cursor = local.cursor.development(development);
-    local.copilot = local.copilot.development(development);
-    local.antigravity = local.antigravity.development(development);
+    // Agent Relay's Antigravity hooks in ~/.gemini/config/hooks.json hand
+    // staged messages to the session at its next tool call or turn end. An
+    // installed copy is brought up to date off the start path in production.
     let antigravity_settings = Arc::new(crate::relay::antigravity::AntigravitySettings::new(
         &local.antigravity,
         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
     ));
-    if !matches!(build, outbound::Build::Profile(_)) {
+    if production {
         let antigravity_settings = antigravity_settings.clone();
         let _ = std::thread::Builder::new()
             .name("antigravity-hooks".into())
@@ -205,15 +219,14 @@ pub fn plugins_with_options(
     }
     // Agent Relay's Cursor CLI hooks in ~/.cursor/hooks.json hand staged
     // messages to the session at its next tool call or turn end. An
-    // installed copy is brought up to date off the start path.
+    // installed copy is brought up to date off the start path in production.
     let cursor_settings = Arc::new(crate::relay::cursor_cli::CursorSettings::new(
         &local.cursor,
         crate::relay::cursor_cli::CursorSettings::command_for(
             &std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
-            development,
         ),
     ));
-    if !matches!(build, outbound::Build::Profile(_)) {
+    if production {
         let cursor_settings = cursor_settings.clone();
         let _ = std::thread::Builder::new()
             .name("cursor-hooks".into())
@@ -433,6 +446,77 @@ pub fn plugins_with_options(
     }
 }
 
+/// One-time Dev-only upgrade migration: moves pending messages and consumed-message
+/// records (`drained/`, `claimed/`) from a pre-upgrade `inbox-dev.d` queue into
+/// `inbox.d`. Production never calls this. When running outside an isolated
+/// `ClientProfile` (`!isolated_profile`), an existing `inbox.d` belongs to
+/// Production and is never merged into.
+fn migrate_legacy_dev_inbox(legacy: &Path, current: &Path, isolated_profile: bool) {
+    let Ok(meta) = std::fs::symlink_metadata(legacy) else {
+        return;
+    };
+    if !meta.file_type().is_dir() || !crate::platform::fs::owned_by_current_user(&meta) {
+        return;
+    }
+    if !isolated_profile && std::fs::symlink_metadata(current).is_ok() {
+        return;
+    }
+    let Some(parent) = current.parent() else {
+        return;
+    };
+    let Ok(_lock) = crate::platform::fs::lock_exclusive(&parent.join(".inbox-migrate.lock")) else {
+        return;
+    };
+    let Ok(meta) = std::fs::symlink_metadata(legacy) else {
+        return;
+    };
+    if !meta.file_type().is_dir() || !crate::platform::fs::owned_by_current_user(&meta) {
+        return;
+    }
+    if std::fs::symlink_metadata(current).is_err() {
+        if std::fs::rename(legacy, current).is_ok() {
+            let _ = crate::platform::fs::sync_dir(parent);
+        }
+        return;
+    }
+    if !isolated_profile {
+        return;
+    }
+    merge_inbox_dir(legacy, current, true);
+    let _ = std::fs::remove_dir(legacy);
+}
+
+fn merge_inbox_dir(from: &Path, into: &Path, allow_subdirs: bool) {
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
+    let _ = crate::platform::fs::create_private_dir_all(into);
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&src) else {
+            continue;
+        };
+        if !crate::platform::fs::owned_by_current_user(&meta) {
+            continue;
+        }
+        let dst = into.join(entry.file_name());
+        if meta.file_type().is_file() {
+            if std::fs::symlink_metadata(&dst).is_err() {
+                let _ = std::fs::rename(&src, &dst);
+            } else {
+                let _ = std::fs::remove_file(&src);
+            }
+        } else if allow_subdirs
+            && meta.file_type().is_dir()
+            && matches!(entry.file_name().to_str(), Some("drained" | "claimed"))
+        {
+            merge_inbox_dir(&src, &dst, false);
+            let _ = std::fs::remove_dir(&src);
+        }
+    }
+    let _ = crate::platform::fs::sync_dir(into);
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -497,5 +581,62 @@ mod tests {
             .flat_map(|s| s.get().keys().cloned().collect::<Vec<_>>())
             .collect();
         assert!(!keys.iter().any(|k| k == "pi_extension"), "{keys:?}");
+    }
+
+    #[test]
+    fn dev_upgrade_migrates_legacy_inbox_dev_preserving_messages_and_tombstones() {
+        let home = tempfile::tempdir().unwrap();
+        let client_home = home.path().join("dev-profile");
+        let devin_legacy = client_home.join(".local/share/devin/relay/inbox-dev.d");
+        let devin_current = client_home.join(".local/share/devin/relay/inbox.d");
+        let cursor_legacy = client_home.join(".agentworkforce/desktop/cursor/inbox-dev.d");
+        let cursor_current = client_home.join(".agentworkforce/desktop/cursor/inbox.d");
+
+        // 1) Fast path: inbox.d does not exist yet — whole directory moves atomically.
+        std::fs::create_dir_all(devin_legacy.join("drained")).unwrap();
+        std::fs::write(devin_legacy.join("s1.m1.msg"), "pending devin").unwrap();
+        std::fs::write(devin_legacy.join("drained/s1.m0.msg"), "consumed").unwrap();
+        migrate_legacy_dev_inbox(&devin_legacy, &devin_current, true);
+        assert!(!devin_legacy.exists());
+        assert_eq!(
+            std::fs::read_to_string(devin_current.join("s1.m1.msg")).unwrap(),
+            "pending devin"
+        );
+        assert!(devin_current.join("drained/s1.m0.msg").is_file());
+
+        // 2) Merge path in isolated profile: inbox.d already exists — merge without clobbering.
+        std::fs::create_dir_all(cursor_legacy.join("drained")).unwrap();
+        std::fs::create_dir_all(cursor_legacy.join("claimed")).unwrap();
+        std::fs::create_dir_all(cursor_current.join("drained")).unwrap();
+        std::fs::write(cursor_legacy.join("c1.m1.msg"), "legacy pending").unwrap();
+        std::fs::write(cursor_legacy.join("c1.m1.msg.lease"), "").unwrap();
+        std::fs::write(cursor_legacy.join("c1.m2.msg"), "older duplicate").unwrap();
+        std::fs::write(cursor_current.join("c1.m2.msg"), "newer current").unwrap();
+        std::fs::write(cursor_legacy.join("drained/c1.m0.msg"), "").unwrap();
+        std::fs::write(cursor_legacy.join("claimed/c1.m3.msg"), "in-flight").unwrap();
+        migrate_legacy_dev_inbox(&cursor_legacy, &cursor_current, true);
+        assert!(!cursor_legacy.exists());
+        assert_eq!(
+            std::fs::read_to_string(cursor_current.join("c1.m1.msg")).unwrap(),
+            "legacy pending"
+        );
+        assert!(cursor_current.join("c1.m1.msg.lease").is_file());
+        assert_eq!(
+            std::fs::read_to_string(cursor_current.join("c1.m2.msg")).unwrap(),
+            "newer current"
+        );
+        assert!(cursor_current.join("drained/c1.m0.msg").is_file());
+        assert!(cursor_current.join("claimed/c1.m3.msg").is_file());
+
+        // 3) Shared home (!isolated_profile) with existing Production inbox.d is never merged.
+        let shared_legacy = home.path().join("shared/inbox-dev.d");
+        let shared_prod = home.path().join("shared/inbox.d");
+        std::fs::create_dir_all(&shared_legacy).unwrap();
+        std::fs::create_dir_all(&shared_prod).unwrap();
+        std::fs::write(shared_legacy.join("s1.dev.msg"), "dev only").unwrap();
+        std::fs::write(shared_prod.join("s1.prod.msg"), "prod only").unwrap();
+        migrate_legacy_dev_inbox(&shared_legacy, &shared_prod, false);
+        assert!(shared_legacy.join("s1.dev.msg").is_file());
+        assert!(!shared_prod.join("s1.dev.msg").exists());
     }
 }

@@ -246,8 +246,7 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
     .unwrap();
     write_record(&dir.join(format!("{}.json", record.session_id)), &record).unwrap();
     use crate::relay::sessions::{SessionDirectory, SessionPartition};
-    let mut config = crate::relay::local::LocalConfig::from_env(&|_| None, home.path());
-    config.devin.development = true;
+    let config = crate::relay::local::LocalConfig::from_env(&|_| None, home.path());
     let sessions = crate::relay::local::LocalSessions::new(config, table.clone());
     let rows = sessions
         .discover_partition(SessionPartition::Droid)
@@ -442,4 +441,49 @@ fn transport_distinguishes_no_submission_from_a_lost_acknowledgement() {
         Err(registry::ExchangeFailure::Uncertain)
     );
     server.join().unwrap();
+}
+
+#[test]
+fn host_arguments_pass_build_flag_explicitly_for_dev_and_profile() {
+    let home = tempfile::tempdir().unwrap();
+    let launch = Launch {
+        harness: ID,
+        name: "worker".into(),
+        text: "hello".into(),
+        directory: home.path().to_path_buf(),
+        full_access: false,
+        message_id: "m1".into(),
+        session_id: "11111111-2222-4333-8444-555555555555".into(),
+        fork: None,
+    };
+    let dev_cx = HarnessContext::local(
+        &BTreeMap::new(),
+        home.path(),
+        &home.path().join("com.agentrelay.desktop.dev"),
+    );
+    let dev_adapter = DroidAdapter::new(&dev_cx);
+    let dir = runtime(&dev_adapter.config);
+    let dev_args = dev_adapter.host_arguments(Path::new("/bin/droid"), &dir, &launch);
+    assert!(dev_args.iter().any(|arg| arg == "--dev"), "{dev_args:?}");
+    assert!(!dev_args.iter().any(|arg| arg.starts_with("--profile")));
+
+    let prod_cx = HarnessContext::local(
+        &BTreeMap::new(),
+        home.path(),
+        &home.path().join("com.agentrelay.desktop"),
+    );
+    let prod_args =
+        DroidAdapter::new(&prod_cx).host_arguments(Path::new("/bin/droid"), &dir, &launch);
+    assert!(!prod_args.iter().any(|arg| arg == "--dev"));
+    assert!(!prod_args.iter().any(|arg| arg.starts_with("--profile")));
+
+    let profile_cx = HarnessContext::local(
+        &BTreeMap::new(),
+        home.path(),
+        &home.path().join("com.agentrelay.desktop.acme"),
+    );
+    let profile_args =
+        DroidAdapter::new(&profile_cx).host_arguments(Path::new("/bin/droid"), &dir, &launch);
+    assert!(!profile_args.iter().any(|arg| arg == "--dev"));
+    assert!(profile_args.iter().any(|arg| arg == "--profile=acme"));
 }

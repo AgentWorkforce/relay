@@ -26,11 +26,7 @@ pub struct Record {
 }
 
 pub fn runtime(config: &DroidConfig) -> PathBuf {
-    config.data_dir.join("relay").join(if config.development {
-        "spawned-dev"
-    } else {
-        "spawned"
-    })
+    config.data_dir.join("relay").join("spawned")
 }
 
 fn private(path: &Path, directory: bool) -> bool {

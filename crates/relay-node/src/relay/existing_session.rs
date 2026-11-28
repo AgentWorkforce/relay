@@ -6,7 +6,6 @@
 //! leader registered with immutable proof (`enablement`).
 
 use crate::relay::store::random_hex;
-use fs2::FileExt;
 use platform::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -320,30 +319,8 @@ impl Journal {
         let path = self
             .directory
             .join(format!("route-{}.lock", Self::route_hash(binding)));
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .custom_flags(platform::O_NOFOLLOW)
-            .mode(0o600)
-            .open(path)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.uid() != platform::getuid()
-            || metadata.mode() & 0o077 != 0
-        {
-            return Err(std::io::Error::new(
-                ErrorKind::PermissionDenied,
-                "route lock is not private",
-            ));
-        }
-        file.lock_exclusive()?;
-        let result = body();
-        // Once `body` has run, its outcome stands: an `Err` from this function
-        // must only ever mean the provider was not contacted. Closing the
-        // file below releases the `flock` even if this unlock fails.
-        let _ = FileExt::unlock(&file);
-        Ok(result)
+        let _file = crate::platform::fs::lock_exclusive(&path)?;
+        Ok(body())
     }
 
     #[cfg(unix)]

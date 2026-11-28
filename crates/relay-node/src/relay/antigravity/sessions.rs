@@ -317,20 +317,10 @@ pub fn session(
 }
 
 fn record_lock(config: &AntigravityConfig, sid: &str) -> io::Result<std::fs::File> {
-    config.prepare()?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(false);
-    let lock = crate::platform::fs::no_follow(crate::platform::fs::private(&mut options))
-        .open(config.state().join(format!("{sid}.lock")))?;
-    let metadata = lock.metadata()?;
-    if !metadata.is_file()
-        || !crate::platform::fs::owned_by_current_user(&metadata)
-        || !crate::platform::fs::private_to_owner(&metadata, 0o077)
-    {
-        return Err(io::Error::other("Antigravity state lock is not private"));
-    }
-    super::lock_exclusive_bounded(&lock, super::LOCK_TIMEOUT)?;
-    Ok(lock)
+    crate::platform::fs::lock_exclusive_bounded(
+        &config.state().join(format!("{sid}.lock")),
+        super::LOCK_TIMEOUT,
+    )
 }
 
 fn observe(

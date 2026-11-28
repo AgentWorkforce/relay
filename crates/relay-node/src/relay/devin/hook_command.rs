@@ -1,21 +1,21 @@
-//! Recognizes only Agent Relay hook commands for this build mode.
+//! Recognizes Agent Relay hook commands for managed provider hook files.
 use super::HOOK_SUBCOMMAND;
 use std::path::Path;
 
-pub(super) fn is_ours(command: &str, installed: &str) -> bool {
-    is_ours_running(command, installed, HOOK_SUBCOMMAND)
+pub(super) fn is_ours(command: &str) -> bool {
+    is_ours_running(command, HOOK_SUBCOMMAND)
 }
 
-/// Whether `command` runs `subcommand` of one of our executables, in the
-/// same build mode (`--dev` or not) as `installed`. Shared by every hook
-/// file Agent Relay manages (Devin's `config.json`, Cursor's `hooks.json`).
-pub(crate) fn is_ours_running(command: &str, installed: &str, subcommand: &str) -> bool {
-    let dev = |command: &str| command.trim_end().ends_with(" --dev");
-    if dev(command) != dev(installed) {
-        return false;
-    }
+/// Whether `command` runs `subcommand` of one of our executables. Shared by
+/// managed hook files (Devin's `config.json`, Cursor's `hooks.json`).
+/// Recognizes legacy `--dev` commands and `Agent Relay Dev Helper` so cleanup
+/// and upgrades still replace or remove pre-upgrade entries.
+pub(crate) fn is_ours_running(command: &str, subcommand: &str) -> bool {
     let body = command.trim();
-    let body = body.strip_suffix(" --dev").unwrap_or(body).trim_end();
+    let body = body
+        .strip_suffix(" --dev")
+        .map(str::trim_end)
+        .unwrap_or(body);
     let Some(executable) = body.strip_suffix(subcommand).map(str::trim_end) else {
         return false;
     };

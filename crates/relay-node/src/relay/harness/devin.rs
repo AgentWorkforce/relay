@@ -83,11 +83,14 @@ pub struct Record {
 }
 
 pub fn runtime(config: &DevinConfig) -> PathBuf {
-    config.data_dir.join("relay").join(if config.development {
-        "spawned-dev"
-    } else {
-        "spawned"
-    })
+    config.data_dir.join("relay").join("spawned")
+}
+
+/// Legacy runtime directory written by Agent Relay Dev before dev-specific
+/// provider paths were removed. Consulted only by Development builds so live
+/// pre-upgrade detached hosts can still be recovered, messaged, and stopped.
+pub fn legacy_dev_runtime(config: &DevinConfig) -> PathBuf {
+    config.data_dir.join("relay").join("spawned-dev")
 }
 
 fn private(path: &Path, directory: bool) -> bool {
@@ -184,17 +187,14 @@ pub(super) fn exchange(
     None
 }
 
-pub fn deliver(
-    config: &DevinConfig,
+fn deliver_from_runtime(
+    dir: &Path,
     table: &dyn ProcessTable,
     session: &str,
     id: &str,
     text: &str,
 ) -> Option<InjectOutcome> {
-    if !is_session_id(session) {
-        return None;
-    }
-    let path = runtime(config).join(format!("{session}.json"));
+    let path = dir.join(format!("{session}.json"));
     if !path.exists() {
         return None;
     }
@@ -219,7 +219,40 @@ pub fn deliver(
     )
 }
 
+pub fn deliver(
+    config: &DevinConfig,
+    table: &dyn ProcessTable,
+    session: &str,
+    id: &str,
+    text: &str,
+) -> Option<InjectOutcome> {
+    deliver_with_legacy_dev(config, table, session, id, text, false)
+}
+
+pub(crate) fn deliver_with_legacy_dev(
+    config: &DevinConfig,
+    table: &dyn ProcessTable,
+    session: &str,
+    id: &str,
+    text: &str,
+    include_legacy_dev: bool,
+) -> Option<InjectOutcome> {
+    if !is_session_id(session) {
+        return None;
+    }
+    if let Some(outcome) = deliver_from_runtime(&runtime(config), table, session, id, text) {
+        return Some(outcome);
+    }
+    if include_legacy_dev {
+        return deliver_from_runtime(&legacy_dev_runtime(config), table, session, id, text);
+    }
+    None
+}
+
+type Terminate = Arc<dyn Fn(&dyn ProcessTable, SpawnedProcess) + Send + Sync>;
+
 pub struct DevinAdapter {
+    terminate: Terminate,
     executable: Option<PathBuf>,
     config: DevinConfig,
     table: Arc<dyn ProcessTable>,
@@ -263,18 +296,20 @@ impl DevinAdapter {
         }
         if root.is(self.table.process(root.pid)) {
             for process in owned {
-                stop_process(self.table.as_ref(), process.pid, Some(process.start));
+                (self.terminate)(self.table.as_ref(), SpawnedProcess::of(process));
             }
         }
     }
     pub fn new(cx: &HarnessContext) -> Self {
         let executable = executable(cx);
         let build = Build::of(&cx.app_data_dir);
-        let development = build.is_development();
         Self {
+            terminate: Arc::new(|table, process| {
+                stop_process(table, process.pid, Some(process.start))
+            }),
             build,
             executable,
-            config: DevinConfig::from_env(&|k| cx.var(k), &cx.home).development(development),
+            config: DevinConfig::from_env(&|k| cx.var(k), &cx.home),
             table: cx.table.clone(),
             helper: std::env::current_exe().ok(),
             environment: cx
@@ -286,9 +321,43 @@ impl DevinAdapter {
             ready_timeout: TIMEOUT,
         }
     }
+    fn host_arguments(&self, executable: &Path, dir: &Path, launch: &Launch) -> Vec<String> {
+        let mut arguments = vec![
+            "devin-spawn-host".into(),
+            "--executable".into(),
+            executable.display().to_string(),
+            "--directory".into(),
+            launch.directory.display().to_string(),
+            "--runtime".into(),
+            dir.display().to_string(),
+            "--launch-id".into(),
+            launch.session_id.clone(),
+        ];
+        if launch.full_access {
+            arguments.push("--full-access".into());
+        }
+        match &self.build {
+            Build::Production => {}
+            Build::Development => arguments.push("--dev".into()),
+            Build::Profile(id) => {
+                // One word, so an id starting with `-` is never read
+                // as an option.
+                arguments.push(format!("--profile={id}"));
+            }
+        }
+        arguments
+    }
+    fn read_runtime_record(&self, file_name: &str) -> Option<Record> {
+        read_record(&runtime(&self.config).join(file_name)).or_else(|| {
+            self.build
+                .is_development()
+                .then(|| read_record(&legacy_dev_runtime(&self.config).join(file_name)))
+                .flatten()
+        })
+    }
     fn record(&self, target: &Target) -> Option<Record> {
         self.owns(target)
-            .then(|| read_record(&runtime(&self.config).join(format!("{}.json", target.id))))
+            .then(|| self.read_runtime_record(&format!("{}.json", target.id)))
             .flatten()
             .filter(|r| r.session_id == target.id)
     }
@@ -373,25 +442,7 @@ impl SpawnFacet for DevinAdapter {
             let dir = runtime(&self.config);
             crate::relay::paths::socket_directory(&dir)
                 .map_err(|_| LaunchError::Failed("Devin spawn folder is not private".into()))?;
-            let mut arguments = vec![
-                "devin-spawn-host".into(),
-                "--executable".into(),
-                executable.display().to_string(),
-                "--directory".into(),
-                launch.directory.display().to_string(),
-                "--runtime".into(),
-                dir.display().to_string(),
-                "--launch-id".into(),
-                launch.session_id.clone(),
-            ];
-            if launch.full_access {
-                arguments.push("--full-access".into());
-            }
-            if let Build::Profile(id) = &self.build {
-                // One word, so an id starting with `-` is never read
-                // as an option.
-                arguments.push(format!("--profile={id}"));
-            }
+            let arguments = self.host_arguments(executable, &dir, launch);
             let mut environment = self.environment.clone();
             environment.insert(MARKER.into(), launch.session_id.clone());
             let log = dir.join(format!("{}.host.log", launch.session_id));
@@ -479,11 +530,11 @@ impl SpawnFacet for DevinAdapter {
         })
     }
     fn find(&self, intent: &Intent) -> Option<(Target, Option<SpawnedProcess>)> {
-        let ready = runtime(&self.config).join(format!("{}.ready.json", intent.session_id));
+        let ready = format!("{}.ready.json", intent.session_id);
         let deadline = Instant::now() + TIMEOUT;
         // The host may still be completing a launch the core interrupted.
         let record = loop {
-            if let Some(record) = read_record(&ready) {
+            if let Some(record) = self.read_runtime_record(&ready) {
                 break record;
             }
             let running = intent.process.is_some_and(|p| {
@@ -525,16 +576,8 @@ impl SpawnFacet for DevinAdapter {
                     std::thread::sleep(Duration::from_millis(20));
                 }
             }
-            stop_process(
-                self.table.as_ref(),
-                record.child.pid,
-                Some(record.child.start),
-            );
-            stop_process(
-                self.table.as_ref(),
-                record.host.pid,
-                Some(record.host.start),
-            );
+            (self.terminate)(self.table.as_ref(), record.child);
+            (self.terminate)(self.table.as_ref(), record.host);
         }
     }
     fn observe(&self, agents: &[Watched]) -> Vec<Observation> {

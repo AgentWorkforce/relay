@@ -13,15 +13,13 @@ pub const SETTING: &str = "cursor_direct_delivery";
 /// the waiting `stop` one (`wait::WAIT_TIMEOUT`).
 const HOOK_TIMEOUT: u64 = 10;
 
-/// The `stop` entry's command: the hook with `--wait`, before `--dev`.
+/// The `stop` entry's command: the hook with `--wait`.
 fn waiting(command: &str) -> String {
-    match command.strip_suffix(" --dev") {
-        Some(hook) => format!("{hook} {WAIT_FLAG} --dev"),
-        None => format!("{command} {WAIT_FLAG}"),
-    }
+    format!("{command} {WAIT_FLAG}")
 }
 
-/// `command` without the `stop` entry's `--wait`.
+/// `command` without the `stop` entry's `--wait`. Also recognizes legacy
+/// `--wait --dev` entries written before dev hook flags were removed.
 fn without_wait(command: &str) -> (String, bool) {
     let command = command.trim();
     let (hook, dev) = match command.strip_suffix(" --dev") {
@@ -36,7 +34,7 @@ fn without_wait(command: &str) -> (String, bool) {
 
 /// Installs and removes Agent Relay's hooks in `~/.cursor/hooks.json`. The
 /// file is the source of truth: the setting is on exactly when a hook
-/// running this build's subcommand is there. Entries for other commands are
+/// running our subcommand is there. Entries for other commands are
 /// the person's and are never touched.
 pub struct CursorSettings {
     config: CursorConfig,
@@ -53,16 +51,12 @@ impl CursorSettings {
         }
     }
 
-    /// The hook command for `executable`, with `--dev` for Agent Relay Dev.
-    pub fn command_for(executable: &Path, development: bool) -> String {
-        let mut command = format!(
+    /// The hook command for `executable`.
+    pub fn command_for(executable: &Path) -> String {
+        format!(
             "{} {HOOK_SUBCOMMAND}",
             crate::relay::outbound::shell_quote(&executable.to_string_lossy())
-        );
-        if development {
-            command.push_str(" --dev");
-        }
-        command
+        )
     }
 
     fn installed(&self) -> bool {
@@ -82,7 +76,6 @@ impl CursorSettings {
     pub(super) fn is_ours(&self, command: &str) -> bool {
         crate::relay::devin::hook_command::is_ours_running(
             &without_wait(command).0,
-            &self.command,
             HOOK_SUBCOMMAND,
         )
     }
@@ -122,23 +115,11 @@ impl CursorSettings {
     /// hook claims, exclusive while the file is edited.
     fn file_lock(&self, exclusive: bool) -> Option<std::fs::File> {
         let path = self.lock_path();
-        let dir = path.parent()?;
-        std::fs::create_dir_all(dir).ok()?;
-        let _ = platform::set_mode(dir, 0o700);
-        use platform::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&path)
-            .ok()?;
-        let taken = if exclusive {
-            fs2::FileExt::lock_exclusive(&file)
+        if exclusive {
+            crate::platform::fs::lock_exclusive(&path).ok()
         } else {
-            fs2::FileExt::lock_shared(&file)
-        };
-        taken.ok().map(|()| file)
+            crate::platform::fs::lock_shared(&path).ok()
+        }
     }
 
     /// Brings this build's entries, where they are in `hooks.json`, up to

@@ -182,26 +182,7 @@ impl Registry {
     }
 
     fn lock(&self) -> std::io::Result<File> {
-        let path = self.directory.join(".lock");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .custom_flags(super::platform::O_NOFOLLOW)
-            .mode(0o600)
-            .open(path)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.uid() != super::platform::getuid()
-            || metadata.mode() & 0o077 != 0
-        {
-            return Err(std::io::Error::new(
-                ErrorKind::PermissionDenied,
-                "binding lock is not private",
-            ));
-        }
-        file.lock_exclusive()?;
-        Ok(file)
+        crate::platform::fs::lock_exclusive(&self.directory.join(".lock"))
     }
 
     pub(crate) fn path_for(&self, session_id: &str) -> PathBuf {

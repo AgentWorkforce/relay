@@ -1036,35 +1036,75 @@ fn the_setting_fails_closed_and_is_offered_only_where_cursor_cli_ran() {
 }
 
 #[test]
-fn hook_commands_are_recognized_per_build() {
+fn hook_commands_are_recognized() {
     let (_temp, config, _table) = world();
     let settings = settings(&config);
     assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook"));
     assert!(settings.is_ours("'/opt/relay dir/agent-relay-probe' cursor-hook"));
-    assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --dev"));
     assert!(!settings.is_ours("/opt/relay/agent-relay-probe devin-hook"));
     assert!(!settings.is_ours("echo cursor-hook"));
-    let dev = CursorSettings::new(&config, "/opt/agent-relay-probe cursor-hook --dev".into());
-    assert!(dev.is_ours("/opt/agent-relay-probe cursor-hook --dev"));
-    assert!(!dev.is_ours("/opt/agent-relay-probe cursor-hook"));
-    // The waiting `stop` entry is each build's too.
+    // The waiting `stop` entry is ours too.
     assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait"));
-    assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --dev"));
-    assert!(dev.is_ours("/opt/agent-relay-probe cursor-hook --wait --dev"));
-    assert!(!dev.is_ours("/opt/agent-relay-probe cursor-hook --wait"));
     assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --wait"));
+    // Legacy pre-upgrade `--dev` / `--wait --dev` / `Agent Relay Dev Helper`
+    // commands stay recognized for wait checks and cleanup.
+    assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --dev"));
+    assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --dev"));
+    assert!(settings.is_ours(
+        "'/Applications/Agent Relay Dev.app/Contents/Helpers/Agent Relay Dev Helper' cursor-hook --wait --dev"
+    ));
+    assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --wait --dev"));
+    assert!(!settings.is_ours("/opt/probe cursor-hook --wait --dev"));
 }
 
 #[test]
-fn agent_relay_dev_keeps_its_own_inbox() {
-    let (_temp, config, table) = world();
-    let dev = config.clone().development(true);
-    send(&config, &table, uid(), SESSION, "m-1", "production");
-    send(&dev, &table, uid(), SESSION, "m-2", "development");
-    let payload = json!({"hook_event_name": "postToolUse", "conversation_id": SESSION});
-    let answer = hook_answer(&dev, &payload).unwrap();
-    assert_eq!(answer.output["additional_context"], "development");
-    assert!(config.inbox().join(format!("{SESSION}.m-1.msg")).exists());
+fn lone_legacy_wait_dev_stop_entry_still_waits_and_can_be_cleaned_up() {
+    let (_temp, config, _table) = world();
+    let settings = settings(&config);
+    let legacy = "'/Applications/Agent Relay Dev.app/Contents/Helpers/Agent Relay Dev Helper' cursor-hook --wait --dev";
+    std::fs::write(
+        config.hooks_file(),
+        serde_json::to_vec(&json!({
+            "version": 1,
+            "hooks": {
+                "stop": [{"command": legacy, "timeout": 3600, "loop_limit": null}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        settings.waits(),
+        "pre-upgrade --wait --dev stop entry must keep waiting loops alive"
+    );
+    assert_eq!(settings.get()[SETTING], json!(true));
+    // Re-enabling replaces the legacy entry without leaving duplicates behind.
+    settings.set(SETTING, &json!(true)).unwrap().unwrap();
+    let replaced = settings.read_object().unwrap();
+    let stop_entries = replaced["hooks"]["stop"].as_array().unwrap();
+    assert_eq!(stop_entries.len(), 1);
+    assert!(
+        !stop_entries[0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--dev"),
+        "{stop_entries:?}"
+    );
+    // Turning off removes a lone legacy entry directly too.
+    std::fs::write(
+        config.hooks_file(),
+        serde_json::to_vec(&json!({
+            "version": 1,
+            "hooks": {
+                "stop": [{"command": legacy, "timeout": 3600, "loop_limit": null}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    settings.set(SETTING, &json!(false)).unwrap().unwrap();
+    assert!(!settings.waits());
+    assert!(!settings.read_object().unwrap().contains_key("hooks"));
 }
 
 /// A real Cursor CLI session, run by `scripts/test-cursor-live.sh`: stages
@@ -1132,11 +1172,9 @@ fn a_hook_with_nothing_to_hand_over_lets_the_prompt_go_on() {
 }
 
 #[test]
-fn every_build_edits_hooks_under_one_lock_and_turning_off_makes_none() {
+fn turning_off_hooks_when_absent_makes_no_lock_file() {
     let temp = tempfile::tempdir().unwrap();
     let config = CursorConfig::from_env(&|_| None, temp.path());
-    let dev = config.clone().development(true);
-    assert_eq!(settings(&config).lock_path(), settings(&dev).lock_path());
     assert_eq!(settings(&config).set(SETTING, &json!(false)), Some(Ok(())));
     assert!(!settings(&config).lock_path().exists());
 }

@@ -1,6 +1,5 @@
 //! Native mode survives retries, restarts, opt-out, and window replacement.
 use crate::platform::fs::{create_private_dir, write_atomic};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
@@ -102,9 +101,7 @@ pub(super) fn edit<T>(
 ) -> Result<T, String> {
     let parent = path.parent().ok_or("Invalid native Codex receipt path.")?;
     create_private_dir(parent).map_err(|_| "Could not create native Codex receipt storage.")?;
-    let lock = private_file(&path.with_extension("lock"), true)
-        .map_err(|_| "Could not open native Codex receipt lock.")?;
-    lock.lock_exclusive()
+    let _lock = crate::platform::fs::lock_exclusive(&path.with_extension("lock"))
         .map_err(|_| "Could not lock native Codex receipts.")?;
     let mut journal = match private_file(path, false) {
         Ok(file) => {

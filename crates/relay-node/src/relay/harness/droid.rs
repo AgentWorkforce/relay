@@ -148,14 +148,13 @@ impl DroidAdapter {
             // Invalid folder names must not select a different build.
             Build::Production
         };
-        let development = build.is_development();
         Self {
             build,
             executable,
             terminate: Arc::new(|table, process| {
                 stop_process(table, process.pid, Some(process.start))
             }),
-            config: DroidConfig::from_env(&|k| cx.var(k), &cx.home).development(development),
+            config: DroidConfig::from_env(&|k| cx.var(k), &cx.home),
             table: cx.table.clone(),
             helper: std::env::current_exe().ok(),
             environment: cx
@@ -166,6 +165,25 @@ impl DroidAdapter {
             systemd_run: cx.systemd_run.clone(),
             ready_timeout: TIMEOUT,
         }
+    }
+    fn host_arguments(&self, executable: &Path, dir: &Path, launch: &Launch) -> Vec<String> {
+        let mut arguments = vec![
+            "droid-spawn-host".into(),
+            "--executable".into(),
+            executable.display().to_string(),
+            "--directory".into(),
+            launch.directory.display().to_string(),
+            "--runtime".into(),
+            dir.display().to_string(),
+            "--launch-id".into(),
+            launch.session_id.clone(),
+        ];
+        match &self.build {
+            Build::Production => {}
+            Build::Development => arguments.push("--dev".into()),
+            Build::Profile(id) => arguments.push(format!("--profile={id}")),
+        }
+        arguments
     }
     fn record(&self, target: &Target) -> Option<Record> {
         self.owns(target)
@@ -267,20 +285,7 @@ impl SpawnFacet for DroidAdapter {
                     LaunchError::Failed("Droid initial task could not be saved privately".into())
                 })?;
             initial_saved = true;
-            let mut arguments = vec![
-                "droid-spawn-host".into(),
-                "--executable".into(),
-                executable.display().to_string(),
-                "--directory".into(),
-                launch.directory.display().to_string(),
-                "--runtime".into(),
-                dir.display().to_string(),
-                "--launch-id".into(),
-                launch.session_id.clone(),
-            ];
-            if let Build::Profile(id) = &self.build {
-                arguments.push(format!("--profile={id}"));
-            }
+            let arguments = self.host_arguments(executable, &dir, launch);
 
             let mut environment = self.environment.clone();
             environment.insert(MARKER.into(), launch.session_id.clone());

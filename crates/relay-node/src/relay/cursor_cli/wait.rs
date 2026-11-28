@@ -103,21 +103,11 @@ fn generation(payload: &Value) -> Option<&str> {
 /// lock cannot be taken.
 fn locked<T>(config: &CursorConfig, session: &str, run: impl FnOnce() -> T) -> Option<T> {
     let dir = dir(config);
-    std::fs::create_dir_all(&dir).ok()?;
+    let _ = crate::platform::fs::create_private_dir_all(&dir);
     let _ = platform::set_mode(&config.inbox(), 0o700);
     let _ = platform::set_mode(&dir, 0o700);
-    use platform::OpenOptionsExt;
-    let lock = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(dir.join(format!(".{session}.lock")))
-        .ok()?;
-    fs2::FileExt::lock_exclusive(&lock).ok()?;
-    let result = run();
-    let _ = fs2::FileExt::unlock(&lock);
-    Some(result)
+    let _lock = crate::platform::fs::lock_exclusive(&dir.join(format!(".{session}.lock"))).ok()?;
+    Some(run())
 }
 
 fn read(config: &CursorConfig, session: &str) -> Option<Waiter> {

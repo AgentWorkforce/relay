@@ -823,15 +823,13 @@ fn subagents_filtered_on_db_error_or_sidecar_and_stale_records_ignored() {
 }
 
 #[test]
-fn settings_extension_refresh_and_dev_isolation() {
+fn settings_extension_refresh_and_legacy_dev_cleanup() {
     use crate::relay::agents::SettingsExtension;
     let home = tempfile::tempdir().unwrap();
-    let prod_cfg = AntigravityConfig::from_env(&|_| None, home.path());
-    let dev_cfg = prod_cfg.clone().development(true);
-    std::fs::create_dir_all(&prod_cfg.data_dir).unwrap();
+    let cfg = AntigravityConfig::from_env(&|_| None, home.path());
+    std::fs::create_dir_all(&cfg.data_dir).unwrap();
 
-    let prod = AntigravitySettings::new(&prod_cfg, PathBuf::from("/opt/old-helper"));
-    let dev = AntigravitySettings::new(&dev_cfg, PathBuf::from("/opt/dev-helper"));
+    let prod = AntigravitySettings::new(&cfg, PathBuf::from("/opt/old-helper"));
     if !proof::SUPPORTED {
         assert!(prod.get().is_empty());
         assert!(prod.refuse(DIRECT_DELIVERY_SETTING, &json!(true)).is_some());
@@ -842,27 +840,64 @@ fn settings_extension_refresh_and_dev_isolation() {
     prod.set(DIRECT_DELIVERY_SETTING, &json!(true))
         .unwrap()
         .unwrap();
-    dev.set_enabled(true).unwrap();
     assert!(prod.enabled());
-    assert!(dev.enabled());
 
     // Refresh updates an already-installed entry to a new helper path.
-    let updated = AntigravitySettings::new(&prod_cfg, PathBuf::from("/opt/new-helper"));
+    let updated = AntigravitySettings::new(&cfg, PathBuf::from("/opt/new-helper"));
     assert!(!updated.enabled());
     updated.refresh().unwrap();
     assert!(updated.enabled());
-    // Dev hook entry remains intact and separate.
-    assert!(dev.enabled());
 
-    // Explicitly turning off is respected by a subsequent refresh.
+    // Add a legacy owned `"agent-relay-dev"` entry beside `"agent-relay"` and
+    // verify disabling cleans up both while preserving user entries.
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(cfg.hooks_file()).unwrap()).unwrap();
+    let legacy_dev = json!({
+        "SessionStart": [{"type": "command", "command": "exec /opt/dev-helper antigravity-hook --event start --dev", "timeout": 20}],
+        "PreInvocation": [{"type": "command", "command": "exec /opt/dev-helper antigravity-hook --event pre --dev", "timeout": 10}],
+        "PostInvocation": [{"type": "command", "command": "exec /opt/dev-helper antigravity-hook --event post --dev", "timeout": 10}],
+        "Stop": [{"type": "command", "command": "exec /opt/dev-helper antigravity-hook --event stop --dev", "timeout": 3600}],
+    });
+    doc.as_object_mut()
+        .unwrap()
+        .insert("agent-relay-dev".into(), legacy_dev);
+    doc.as_object_mut()
+        .unwrap()
+        .insert("user-hook".into(), json!({}));
+    std::fs::write(cfg.hooks_file(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+
+    // Explicitly turning off removes both owned entries and is respected by refresh.
     updated
         .set(DIRECT_DELIVERY_SETTING, &json!(false))
         .unwrap()
         .unwrap();
     assert!(!updated.enabled());
+    let after: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(cfg.hooks_file()).unwrap()).unwrap();
+    assert!(after.get("agent-relay").is_none());
+    assert!(after.get("agent-relay-dev").is_none());
+    assert!(after.get("user-hook").is_some());
     updated.refresh().unwrap();
     assert!(!updated.enabled());
-    assert!(dev.enabled());
+
+    // A user-edited or unrelated `"agent-relay-dev"` entry must be left untouched.
+    let mut custom = after;
+    let custom_dev = json!({
+        "SessionStart": [{"type": "command", "command": "echo custom", "timeout": 20}]
+    });
+    custom
+        .as_object_mut()
+        .unwrap()
+        .insert("agent-relay-dev".into(), custom_dev.clone());
+    std::fs::write(
+        cfg.hooks_file(),
+        serde_json::to_vec_pretty(&custom).unwrap(),
+    )
+    .unwrap();
+    updated.set_enabled(false).unwrap();
+    let preserved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(cfg.hooks_file()).unwrap()).unwrap();
+    assert_eq!(preserved.get("agent-relay-dev"), Some(&custom_dev));
 }
 
 #[test]
@@ -876,21 +911,17 @@ fn hooks_lock_times_out_cleanly_without_modifying_hooks_json() {
     let initial = serde_json::to_vec_pretty(&json!({"user-hook": {}})).unwrap();
     std::fs::write(config.hooks_file(), &initial).unwrap();
 
-    let lock_dir = home.path().join(".agentworkforce/desktop");
-    crate::platform::fs::create_private_dir_all(&lock_dir).unwrap();
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(false);
-    let holder = crate::platform::fs::private(&mut opts)
-        .open(lock_dir.join(".antigravity-hooks.lock"))
-        .unwrap();
-    fs2::FileExt::lock_exclusive(&holder).unwrap();
+    let lock_path = home
+        .path()
+        .join(".agentworkforce/desktop/.antigravity-hooks.lock");
+    let holder = crate::platform::fs::lock_exclusive(&lock_path).unwrap();
 
     let settings = AntigravitySettings::new(&config, PathBuf::from("/opt/agent-relay-probe"));
     assert!(settings.set_enabled(true).is_err());
     assert!(settings.refresh().is_err());
     assert_eq!(std::fs::read(config.hooks_file()).unwrap(), initial);
 
-    fs2::FileExt::unlock(&holder).unwrap();
+    drop(holder);
     settings.set_enabled(true).unwrap();
     assert!(settings.enabled());
 }

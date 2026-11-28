@@ -9,21 +9,15 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DroidConfig {
     pub data_dir: PathBuf,
-    pub development: bool,
 }
 impl DroidConfig {
     pub fn from_local(config: &crate::relay::local::LocalConfig) -> Self {
-        Self::from_env(&|_| None, &config.devin.home).development(config.devin.development)
+        Self::from_env(&|_| None, &config.devin.home)
     }
     pub fn from_env(_env: &dyn Fn(&str) -> Option<String>, home: &Path) -> Self {
         Self {
             data_dir: home.join(".factory"),
-            development: false,
         }
-    }
-    pub fn development(mut self, development: bool) -> Self {
-        self.development = development;
-        self
     }
 }
 pub fn records(config: &DroidConfig, table: &dyn ProcessTable) -> Vec<Record> {

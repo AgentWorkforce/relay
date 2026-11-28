@@ -104,6 +104,9 @@ pub struct LocalConfig {
     /// The person's Hermes home and this core's state for it; `None` until
     /// `plugins_with` sets it, and while `AGENT_RELAY_ENABLE_HERMES=0`.
     pub hermes: Option<crate::relay::hermes::HermesConfig>,
+    /// Whether this core is an Agent Relay Dev build; used only for
+    /// backwards-compatible lookup of pre-upgrade `spawned-dev` runtimes.
+    pub(crate) development_build: bool,
 }
 
 impl LocalConfig {
@@ -149,6 +152,7 @@ impl LocalConfig {
             sources: Default::default(),
             openclaw: None,
             hermes: None,
+            development_build: false,
         }
     }
 }
@@ -2435,6 +2439,7 @@ mod tests {
             sources: Default::default(),
             openclaw: None,
             hermes: None,
+            development_build: false,
         };
         World {
             sessions: LocalSessions::new(config, table.clone()),

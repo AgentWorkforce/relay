@@ -719,6 +719,46 @@ fn legacy_relative_managed_hooks_are_disabled_but_can_be_removed() {
     settings.set_enabled(false).unwrap();
     assert!(!config.hooks_file().exists());
 }
+
+#[test]
+fn disabling_copilot_removes_owned_legacy_dev_hooks_and_preserves_user_files() {
+    let (_home, config, _table, _) = proof::tests::fixture();
+    let settings = CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into());
+    settings.set_enabled(true).unwrap();
+
+    // Write a legacy Development hook file (with `--dev` commands) beside the
+    // current hook file and verify `set_enabled(false)` removes both.
+    let legacy_path = config.legacy_dev_hooks_file();
+    let legacy_text = std::fs::read_to_string(config.hooks_file())
+        .unwrap()
+        .replace(
+            "copilot-hook --event start",
+            "copilot-hook --event start --dev",
+        )
+        .replace(
+            "copilot-hook --event before",
+            "copilot-hook --event before --dev",
+        )
+        .replace(
+            "copilot-hook --event tool",
+            "copilot-hook --event tool --dev",
+        )
+        .replace(
+            "copilot-hook --event stop",
+            "copilot-hook --event stop --dev",
+        );
+    std::fs::write(&legacy_path, legacy_text).unwrap();
+    settings.set_enabled(false).unwrap();
+    assert!(!config.hooks_file().exists());
+    assert!(!legacy_path.exists());
+
+    // A user-edited or unrelated `agent-relay-dev.json` must be left untouched.
+    let custom =
+        r#"{"version":1,"hooks":{"sessionStart":[{"type":"command","command":"echo user"}]}}"#;
+    std::fs::write(&legacy_path, custom).unwrap();
+    settings.set_enabled(false).unwrap();
+    assert_eq!(std::fs::read_to_string(&legacy_path).unwrap(), custom);
+}
 #[test]
 fn an_unreadable_native_journal_cannot_reset_the_identity_receipt_epoch() {
     let (_home, config, table, _) = proof::tests::fixture();

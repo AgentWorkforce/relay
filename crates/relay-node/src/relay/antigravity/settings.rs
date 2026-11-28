@@ -1,5 +1,5 @@
-//! Managed `"agent-relay"` / `"agent-relay-dev"` entries in Antigravity's
-//! global `~/.gemini/config/hooks.json`, preserving every user-configured hook.
+//! Managed `"agent-relay"` entry in Antigravity's global
+//! `~/.gemini/config/hooks.json`, preserving every user-configured hook.
 use super::{proof, AntigravityConfig};
 use serde_json::{json, Map, Value};
 use std::io;
@@ -9,21 +9,13 @@ use std::path::{Path, PathBuf};
 pub const SETTING: &str = "antigravity_direct_delivery";
 
 const HOOK_KEY: &str = "agent-relay";
-const DEV_HOOK_KEY: &str = "agent-relay-dev";
+const LEGACY_DEV_HOOK_KEY: &str = "agent-relay-dev";
 const EVENTS: &[(&str, &str, u64)] = &[
     ("SessionStart", "start", 20),
     ("PreInvocation", "pre", 10),
     ("PostInvocation", "post", 10),
     ("Stop", "stop", 3600),
 ];
-
-fn hook_key(config: &AntigravityConfig) -> &'static str {
-    if config.development {
-        DEV_HOOK_KEY
-    } else {
-        HOOK_KEY
-    }
-}
 
 pub struct AntigravitySettings {
     config: AntigravityConfig,
@@ -48,26 +40,12 @@ impl AntigravitySettings {
     }
 
     fn hooks_lock(&self) -> Result<std::fs::File, String> {
-        let dir = self.config.home.join(".agentworkforce/desktop");
-        crate::platform::fs::create_private_dir_all(&dir)
-            .map_err(|_| "Could not open Antigravity hooks lock directory.")?;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(false);
-        let lock = crate::platform::fs::no_follow(crate::platform::fs::private(&mut options))
-            .open(dir.join(".antigravity-hooks.lock"))
-            .map_err(|_| "Could not open Antigravity hooks lock.")?;
-        let metadata = lock
-            .metadata()
-            .map_err(|_| "Could not inspect Antigravity hooks lock.")?;
-        if !metadata.is_file()
-            || !crate::platform::fs::owned_by_current_user(&metadata)
-            || !crate::platform::fs::private_to_owner(&metadata, 0o077)
-        {
-            return Err("Antigravity hooks lock is not private.".into());
-        }
-        super::lock_exclusive_bounded(&lock, super::LOCK_TIMEOUT)
-            .map_err(|_| "Could not lock Antigravity hooks.".to_string())?;
-        Ok(lock)
+        let path = self
+            .config
+            .home
+            .join(".agentworkforce/desktop/.antigravity-hooks.lock");
+        crate::platform::fs::lock_exclusive_bounded(&path, super::LOCK_TIMEOUT)
+            .map_err(|_| "Could not lock Antigravity hooks.".to_string())
     }
 
     /// Bring an already-installed managed entry up to date with the current
@@ -81,20 +59,19 @@ impl AntigravitySettings {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let _file_lock = self.hooks_lock()?;
-        let key = hook_key(&self.config);
         let Some(Value::Object(mut root)) =
             document(&self.config).map_err(|_| "Could not read Antigravity hooks.")?
         else {
             return Ok(());
         };
-        if !root.contains_key(key) {
+        if !root.contains_key(HOOK_KEY) {
             return Ok(());
         }
-        let expected = managed_entry(&self.config, &self.config.helper());
-        if root.get(key) == Some(&expected) {
+        let expected = managed_entry(&self.config.helper());
+        if root.get(HOOK_KEY) == Some(&expected) {
             return Ok(());
         }
-        root.insert(key.into(), expected);
+        root.insert(HOOK_KEY.into(), expected);
         let bytes = serde_json::to_vec_pretty(&Value::Object(root))
             .map_err(|_| "Could not encode Antigravity hooks.")?;
         crate::platform::fs::write_atomic(&self.config.hooks_file(), &bytes)
@@ -125,9 +102,13 @@ impl AntigravitySettings {
             }
             None => Map::new(),
         };
-        let key = hook_key(&self.config);
         if !enabled {
-            if root.remove(key).is_none() {
+            let removed_current = root.remove(HOOK_KEY).is_some();
+            let removed_legacy = root
+                .get(LEGACY_DEV_HOOK_KEY)
+                .is_some_and(matches_owned_legacy_dev_entry)
+                && root.remove(LEGACY_DEV_HOOK_KEY).is_some();
+            if !removed_current && !removed_legacy {
                 return Ok(());
             }
             let bytes = serde_json::to_vec_pretty(&Value::Object(root))
@@ -135,11 +116,11 @@ impl AntigravitySettings {
             return crate::platform::fs::write_atomic(&path, &bytes)
                 .map_err(|_| "Could not save Antigravity hooks.".into());
         }
-        let expected = managed_entry(&self.config, &self.config.helper());
-        if root.get(key) == Some(&expected) {
+        let expected = managed_entry(&self.config.helper());
+        if root.get(HOOK_KEY) == Some(&expected) {
             return Ok(());
         }
-        root.insert(key.into(), expected);
+        root.insert(HOOK_KEY.into(), expected);
         let bytes = serde_json::to_vec_pretty(&Value::Object(root))
             .map_err(|_| "Could not encode Antigravity hooks.")?;
         crate::platform::fs::create_private_dir_all(
@@ -186,14 +167,18 @@ impl crate::relay::agents::SettingsExtension for AntigravitySettings {
     }
 }
 
-fn managed_entry(config: &AntigravityConfig, executable: &Path) -> Value {
+fn managed_entry(executable: &Path) -> Value {
+    managed_entry_with_dev(executable, false)
+}
+
+fn managed_entry_with_dev(executable: &Path, legacy_dev: bool) -> Value {
     let mut entry = Map::new();
     for (event, flag, timeout) in EVENTS {
         let command = format!(
             "exec {} antigravity-hook --event {}{}",
             crate::relay::outbound::shell_quote(&executable.to_string_lossy()),
             flag,
-            if config.development { " --dev" } else { "" }
+            if legacy_dev { " --dev" } else { "" }
         );
         entry.insert(
             (*event).into(),
@@ -203,6 +188,13 @@ fn managed_entry(config: &AntigravityConfig, executable: &Path) -> Value {
     Value::Object(entry)
 }
 
+fn matches_owned_legacy_dev_entry(entry: &Value) -> bool {
+    let Some(helper) = managed_helper(entry) else {
+        return false;
+    };
+    entry == &managed_entry_with_dev(&helper, true)
+}
+
 pub(super) fn installed_state(config: &AntigravityConfig) -> io::Result<bool> {
     if !config.helper().is_absolute() {
         return Ok(false);
@@ -210,16 +202,16 @@ pub(super) fn installed_state(config: &AntigravityConfig) -> io::Result<bool> {
     let Some(Value::Object(root)) = document(config)? else {
         return Ok(false);
     };
-    let Some(entry) = root.get(hook_key(config)) else {
+    let Some(entry) = root.get(HOOK_KEY) else {
         return Ok(false);
     };
-    if entry == &managed_entry(config, &config.helper()) {
+    if entry == &managed_entry(&config.helper()) {
         return Ok(true);
     }
     let Some(helper) = managed_helper(entry).filter(|p| p.is_absolute()) else {
         return Ok(false);
     };
-    Ok(same_helper_file(&helper, &config.helper()) && entry == &managed_entry(config, &helper))
+    Ok(same_helper_file(&helper, &config.helper()) && entry == &managed_entry(&helper))
 }
 
 fn managed_helper(entry: &Value) -> Option<PathBuf> {
@@ -270,13 +262,10 @@ pub(super) fn caller_is_hook(
         return false;
     }
     let args = table.arguments(pid);
-    let mut expected = vec![
+    let expected = [
         "antigravity-hook".to_owned(),
         "--event".to_owned(),
         event.to_owned(),
     ];
-    if config.development {
-        expected.push("--dev".to_owned());
-    }
     args.len() == expected.len() + 1 && args[1..] == expected[..]
 }

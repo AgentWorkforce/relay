@@ -338,28 +338,19 @@ pub(super) fn claim(
 }
 
 /// `session_id`'s record lock file, not yet locked.
+#[cfg(test)]
 pub(super) fn lock_file(config: &CursorConfig, session_id: &str) -> Option<std::fs::File> {
-    let dir = records(config);
-    std::fs::create_dir_all(&dir).ok()?;
-    let _ = platform::set_mode(&dir, 0o700);
-    use platform::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(dir.join(format!(".{session_id}.lock")))
+    crate::platform::fs::open_private_lock(&records(config).join(format!(".{session_id}.lock")))
         .ok()
 }
 
 /// Runs `run` under `session_id`'s record lock. `None` when it cannot be
 /// taken.
 fn locked<T>(config: &CursorConfig, session_id: &str, run: impl FnOnce() -> T) -> Option<T> {
-    let lock = lock_file(config, session_id)?;
-    fs2::FileExt::lock_exclusive(&lock).ok()?;
-    let result = run();
-    let _ = fs2::FileExt::unlock(&lock);
-    Some(result)
+    let _lock =
+        crate::platform::fs::lock_exclusive(&records(config).join(format!(".{session_id}.lock")))
+            .ok()?;
+    Some(run())
 }
 
 /// Removes `session_id`'s record if it is still `stale`: under the record
@@ -369,16 +360,13 @@ fn locked<T>(config: &CursorConfig, session_id: &str, run: impl FnOnce() -> T) -
 /// stays for the next discovery.
 pub(super) fn remove_stale(config: &CursorConfig, session_id: &str, stale: &Record) {
     let path = records(config).join(format!("{session_id}.json"));
-    let Some(lock) = lock_file(config, session_id) else {
+    let lock_path = records(config).join(format!(".{session_id}.lock"));
+    let Ok(Some(_lock)) = crate::platform::fs::try_lock_exclusive(&lock_path) else {
         return;
     };
-    if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
-        return;
-    }
     if read(&path).as_ref() == Some(stale) {
         let _ = std::fs::remove_file(&path);
     }
-    let _ = fs2::FileExt::unlock(&lock);
 }
 
 /// How the processes from `pid` up to (not including) `host` vouch for

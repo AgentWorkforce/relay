@@ -159,6 +159,47 @@ mod socket_request_tests {
         }
     }
 
+    #[test]
+    fn spawn_host_commands_accept_dev_and_reject_dev_with_profile() {
+        for cmd in ["devin-spawn-host", "droid-spawn-host"] {
+            let cli = Cli::try_parse_from([
+                "probe",
+                cmd,
+                "--executable",
+                "/bin/true",
+                "--directory",
+                "/tmp",
+                "--runtime",
+                "/tmp/spawned",
+                "--launch-id",
+                "l1",
+                "--dev",
+            ])
+            .unwrap_or_else(|error| panic!("{cmd}: {error}"));
+            let dev = match cli.command {
+                Commands::Node(relay_commands::RelayCommands::DevinSpawnHost { dev, .. })
+                | Commands::Node(relay_commands::RelayCommands::DroidSpawnHost { dev, .. }) => dev,
+                _ => panic!("{cmd}"),
+            };
+            assert!(dev, "{cmd}");
+            assert!(Cli::try_parse_from([
+                "probe",
+                cmd,
+                "--executable",
+                "/bin/true",
+                "--directory",
+                "/tmp",
+                "--runtime",
+                "/tmp/spawned",
+                "--launch-id",
+                "l1",
+                "--dev",
+                "--profile=acme",
+            ])
+            .is_err());
+        }
+    }
+
     // Review on #2019: a reply that starts with a hyphen is still the body.
     #[test]
     fn a_socket_request_body_may_start_with_a_hyphen() {

@@ -49,9 +49,6 @@ pub struct CursorConfig {
     /// The user's home. Cursor reads user hooks from `~/.cursor/hooks.json`
     /// whatever the data and config directories are.
     pub home: PathBuf,
-    /// Agent Relay Dev stages and drains its own inbox, so neither build's
-    /// hook consumes the other's messages.
-    pub development: bool,
 }
 
 impl CursorConfig {
@@ -68,14 +65,7 @@ impl CursorConfig {
                 .or_else(|| set("XDG_CONFIG_HOME").map(|dir| dir.join("cursor")))
                 .unwrap_or_else(|| home.join(".cursor")),
             home: home.to_path_buf(),
-            development: false,
         }
-    }
-
-    /// This configuration selecting Agent Relay Dev's inbox.
-    pub fn development(mut self, development: bool) -> CursorConfig {
-        self.development = development;
-        self
     }
 
     /// One directory per workspace, one per conversation inside it.
@@ -88,19 +78,13 @@ impl CursorConfig {
         self.home.join(".cursor").join("hooks.json")
     }
 
-    /// The queue this build's hook drains: `inbox.d` for Agent Relay,
-    /// `inbox-dev.d` for Agent Relay Dev.
+    /// The queue hooks drain into the conversation.
     pub fn inbox(&self) -> PathBuf {
-        let name = if self.development {
-            "inbox-dev.d"
-        } else {
-            "inbox.d"
-        };
         self.home
             .join(".agentworkforce")
             .join("desktop")
             .join("cursor")
-            .join(name)
+            .join("inbox.d")
     }
 
     /// Cursor CLI has run on this computer (it writes `cli-config.json`),
@@ -529,6 +513,35 @@ pub fn record_editor_hook(
 /// (`wait::wait`), once its `stop` noted the turn ended, and named it when
 /// it ran no `beforeSubmitPrompt` (`wait::stop_seen`). `true` once it
 /// answered.
+/// Drains pending messages from a legacy `inbox-dev.d` directory for a
+/// pre-upgrade `--dev` hook without touching production's `inbox.d`, after
+/// proving the hook runs under the conversation's holder.
+pub(crate) fn drain_legacy_inbox(
+    config: &CursorConfig,
+    legacy_inbox: &Path,
+    table: &dyn ProcessTable,
+    pid: i32,
+    payload: &Value,
+    write: &mut dyn FnMut(&Value) -> bool,
+) -> bool {
+    let Some(session) = payload_session(payload) else {
+        return false;
+    };
+    if hook_caller(config, table, pid, session).is_none() {
+        return false;
+    }
+    let Some(answer) = inbox::hook_answer_in(legacy_inbox, payload) else {
+        return false;
+    };
+    if write(&answer.output) {
+        drain(&answer.claimed);
+        true
+    } else {
+        inbox::unclaim_in(legacy_inbox, &answer.claimed);
+        false
+    }
+}
+
 pub fn run_hook(
     config: &CursorConfig,
     table: &dyn ProcessTable,

@@ -320,11 +320,15 @@ pub(super) struct Pending {
 /// lease ran out is removed instead: delivery no longer wants it handed
 /// over.
 pub(super) fn pending(config: &CursorConfig, session_id: &str) -> Vec<Pending> {
+    pending_in(&config.inbox(), session_id)
+}
+
+fn pending_in(inbox: &Path, session_id: &str) -> Vec<Pending> {
     if !is_session_id(session_id) {
         return Vec::new();
     }
     let prefix = format!("{session_id}.");
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(config.inbox())
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(inbox)
         .map(|entries| {
             entries
                 .flatten()
@@ -390,6 +394,10 @@ pub fn payload_session(payload: &Value) -> Option<&str> {
 /// The caller has already proved the hook runs under the `cursor-agent`
 /// that holds this session (`hook_caller_holds`).
 pub fn hook_answer(config: &CursorConfig, payload: &Value) -> Option<HookAnswer> {
+    hook_answer_in(&config.inbox(), payload)
+}
+
+pub(super) fn hook_answer_in(inbox: &Path, payload: &Value) -> Option<HookAnswer> {
     let event = payload["hook_event_name"].as_str()?;
     if !matches!(event, "postToolUse" | "stop") {
         return None;
@@ -398,10 +406,10 @@ pub fn hook_answer(config: &CursorConfig, payload: &Value) -> Option<HookAnswer>
         return None;
     }
     let session_id = payload_session(payload)?;
-    let claimed_dir = config.inbox().join(CLAIMED_DIR);
+    let claimed_dir = inbox.join(CLAIMED_DIR);
     let mut texts = Vec::new();
     let mut claimed = Vec::new();
-    for message in pending(config, session_id) {
+    for message in pending_in(inbox, session_id) {
         let Some(name) = message.path.file_name() else {
             continue;
         };
@@ -430,7 +438,7 @@ pub fn hook_answer(config: &CursorConfig, payload: &Value) -> Option<HookAnswer>
         .and_then(|dir| dir.sync_all())
         .is_err()
     {
-        unclaim(config, &claimed);
+        unclaim_in(inbox, &claimed);
         return None;
     }
     let text = texts.join("\n\n");
@@ -478,9 +486,13 @@ pub fn hook_answer_with(
 /// Moves claimed files back into the inbox: the answer was not written, so
 /// Cursor has none of them and a later boundary may hand them over.
 pub fn unclaim(config: &CursorConfig, claimed: &[PathBuf]) {
+    unclaim_in(&config.inbox(), claimed);
+}
+
+pub(super) fn unclaim_in(inbox: &Path, claimed: &[PathBuf]) {
     for path in claimed {
         if let Some(name) = path.file_name() {
-            let _ = std::fs::rename(path, config.inbox().join(name));
+            let _ = std::fs::rename(path, inbox.join(name));
         }
     }
 }
