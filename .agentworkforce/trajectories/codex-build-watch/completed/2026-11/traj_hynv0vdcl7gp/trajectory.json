@@ -1,0 +1,53 @@
+{
+  "id": "traj_hynv0vdcl7gp",
+  "version": 1,
+  "task": {
+    "title": "Avoid rebuilding native core when Git index changes"
+  },
+  "status": "completed",
+  "startedAt": "2026-11-04T16:29:37.671Z",
+  "completedAt": "2026-11-04T16:32:57.025Z",
+  "agents": [
+    {
+      "name": "codex-relay-desktop-speed-up",
+      "role": "lead",
+      "joinedAt": "2026-11-04T16:29:37.707Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_44p6lwqnawlw",
+      "title": "Initial work",
+      "agentName": "codex-relay-desktop-speed-up",
+      "startedAt": "2026-11-04T16:29:37.707Z",
+      "endedAt": "2026-11-04T16:32:57.025Z",
+      "events": [
+        {
+          "ts": 1793809796345,
+          "type": "decision",
+          "content": "Watch only Git inputs that affect embedded revision: Watch only Git inputs that affect embedded revision",
+          "raw": {
+            "question": "Watch only Git inputs that affect embedded revision",
+            "chosen": "Watch only Git inputs that affect embedded revision",
+            "alternatives": [],
+            "reasoning": "Cargo fingerprint logs show touching only the builder Git index recompiles both public and private core (65.813 seconds versus 0.441 seconds unchanged). HEAD and its active ref remain watched because revision metadata depends on commits; the index never affects build output."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Removed unused Git index watch; HEAD/ref metadata preserved. Actual build-script regression passes for staging, branch commits, detached commits and explicit releases. Controlled index-only release rebuild fell from 78.693s to 0.317s (272 artifacts fresh). Local benchmark only; clean CI recompilation and version metadata remain separate work.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ad983d7278bab88b0a7d541494521146b869f78a",
+    "endRef": "ad983d7278bab88b0a7d541494521146b869f78a"
+  }
+}

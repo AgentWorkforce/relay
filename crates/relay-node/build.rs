@@ -46,11 +46,10 @@ fn main() {
     println!("cargo:rerun-if-changed=build_site.rs");
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=build_version.rs");
+    // The revision depends on HEAD and its ref, not the staging index.
     // Resolve through git so linked worktrees also track their own HEAD.
-    for name in ["HEAD", "index"] {
-        if let Some(path) = git_path(name) {
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
+    if let Some(path) = git_path("HEAD") {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
     if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
         if let Some(path) = git_path(&reference) {
